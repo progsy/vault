@@ -10,67 +10,19 @@ using haxe.macro.TypeTools;
 using haxe.macro.ComplexTypeTools;
 
 class JsonClass {
-	static function build(filepath:String, staticByDefault:Bool = true) {
+	static function build(filepath:String, staticFields:Bool = true) {
 		var buildFields = Context.getBuildFields();
-
+		var fields:Array<Field> = [];
 		var content = sys.io.File.getContent(filepath);
 		var json = haxe.Json.parse(content);
 
 		for (fieldName in Reflect.fields(json)) {
-			var raw = Reflect.field(json, fieldName);
-			var value = Reflect.hasField(raw, "value") ? Reflect.field(raw, "value") : raw;
-			var comment:String = "";
-			var typeString:String = "Dynamic";
-			var isPublic:Bool = true;
-			var isStatic:Bool = staticByDefault;
-			var isFinal:Bool = false;
-			var isInline:Bool = false;
-			var formStr:String = "Normal";
-
-			if (value != null) {
-				comment = Reflect.hasField(raw, "comment") ? Reflect.field(raw, "comment") : "";
-				typeString = Reflect.hasField(raw, "type") ? Reflect.field(raw, "type") : "Dynamic";
-				isPublic = Reflect.hasField(raw, "public") ? Reflect.field(raw, "public") : true;
-				isStatic = Reflect.hasField(raw, "static") ? Reflect.field(raw, "static") : staticByDefault;
-				isFinal = Reflect.hasField(raw, "final") ? Reflect.field(raw, "final") : false;
-				isInline = Reflect.hasField(raw, "inline") ? Reflect.field(raw, "inline") : false;
-				formStr = Reflect.hasField(raw, "form") ? Reflect.field(raw, "form") : "Normal";
-			}
-
-			var type = try {
-				Context.getType(typeString);
-			} catch (e:Dynamic) {
-				Context.getType("Dynamic");
-			};
-
-			var access:Array<Access> = [];
-			if (isPublic) {
-				access.push(APublic);
-			} else {
-				access.push(APrivate);
-			}
-			if (isStatic) {
-				access.push(AStatic);
-			}
-			if (isInline) {
-				access.push(AInline);
-			}
-			if (isFinal) {
-				access.push(AFinal);
-			}
-
-			var kind = switch (formStr) {
-				case "Property":
-					FieldType.FProp("get", "set", type.toComplexType(), macro $v{value});
-				default:
-					FieldType.FVar(type.toComplexType(), macro $v{value});
-			};
-
-			buildFields.push({
+			var value = Reflect.field(json, fieldName);
+			var kind = FieldType.FVar(null, macro $v{value});
+			fields.push({
 				name: fieldName,
-				access: access,
+				access: staticFields ? [APublic, AStatic] : [APublic],
 				kind: kind,
-				doc: comment,
 				pos: Context.currentPos()
 			});
 		}
@@ -81,22 +33,18 @@ class JsonClass {
 		var reloadAssigns:Array<Expr> = [];
 		var reloadStaticAssigns:Array<Expr> = [];
 
-		for (f in buildFields) {
+		for (f in fields) {
 			var fieldName = f.name;
-			var isStatic = f.access.contains(AStatic);
-
-			if (!isStatic) {
+			if (!staticFields) {
 				reloadAssigns.push(macro {
-					var raw = Reflect.field(json, $v{fieldName});
-					var value = Reflect.hasField(raw, "value") ? Reflect.field(raw, "value") : raw;
+					var value = Reflect.field(json, $v{fieldName});
 					if (Reflect.hasField(json, $v{fieldName})) {
 						$i{fieldName} = value;
 					}
 				});
 			} else {
 				reloadStaticAssigns.push(macro {
-					var raw = Reflect.field(json, $v{fieldName});
-					var value = Reflect.hasField(raw, "value") ? Reflect.field(raw, "value") : raw;
+					var value = Reflect.field(json, $v{fieldName});
 					if (Reflect.hasField(json, $v{fieldName})) {
 						$i{fieldName} = value;
 					}
@@ -104,35 +52,69 @@ class JsonClass {
 			}
 		}
 
-		buildFields.push({
-			name: "reloadJson",
-			access: [APublic, AInline],
-			pos: Context.currentPos(),
-			kind: FFun({
-				args: [{name: "content", type: macro :String}],
-				ret: macro :Void,
-				expr: macro {
-					var json:Dynamic = haxe.Json.parse(content);
-					$b{reloadAssigns};
-				}
-			})
-		});
+		var reloadJsonFunction:haxe.macro.Field;
+		var reloadJsonStaticFunction:haxe.macro.Field;
+		for (f in buildFields) {
+			if (f.name == "reloadJson") {
+				reloadJsonFunction = f;
+			} else if (f.name == "reloadJsonStatic") {
+				reloadJsonStaticFunction = f;
+			}
+		}
 
-		buildFields.push({
-			name: "reloadJsonStatic",
-			access: [APublic, AStatic],
-			pos: Context.currentPos(),
-			kind: FFun({
-				args: [{name: "content", type: macro :String}],
-				ret: macro :Void,
-				expr: macro {
-					var json:Dynamic = haxe.Json.parse(content);
-					$b{reloadStaticAssigns};
-				}
-			})
-		});
+		if (reloadJsonFunction != null) {
+			switch (reloadJsonFunction.kind) {
+				case FFun(f):
+					switch (f.expr.expr) {
+						case EBlock(exprs):
+							f.expr = macro $b{exprs.concat(reloadAssigns)};
+						default:
+					}
+				default:
+			};
+		} else {
+			fields.push({
+				name: "reloadJson",
+				access: [APublic],
+				pos: Context.currentPos(),
+				kind: FFun({
+					args: [{name: "content", type: macro :String}],
+					ret: macro :Void,
+					expr: macro {
+						var json:Dynamic = haxe.Json.parse(content);
+						$b{reloadAssigns};
+					}
+				})
+			});
+		}
 
-		return buildFields;
+		if (reloadJsonStaticFunction != null) {
+			switch (reloadJsonStaticFunction.kind) {
+				case FFun(f):
+					switch (f.expr.expr) {
+						case EBlock(exprs):
+							f.expr = macro $b{exprs.concat(reloadStaticAssigns)};
+						default:
+					}
+				default:
+			};
+		} else {
+			fields.push({
+				name: "reloadJsonStatic",
+				access: [APublic, AStatic],
+				pos: Context.currentPos(),
+				kind: FFun({
+					args: [{name: "content", type: macro :String}],
+					ret: macro :Void,
+					expr: macro {
+						var json:Dynamic = haxe.Json.parse(content);
+						$b{reloadStaticAssigns};
+					}
+				})
+			});
+		}
+
+		return buildFields.concat(fields);
 	}
 }
 #end
