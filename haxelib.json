@@ -1,0 +1,12 @@
+{
+	"name": "vault",
+	"url": "https://github.com/progsy/vault",
+	"license": "MIT",
+	"description": "Game-oriented library for game development",
+	"version": "1.0.0",
+	"releasenote": "",
+	"contributors": [
+		"progsy"
+	],
+	"classPath": "source/"
+}

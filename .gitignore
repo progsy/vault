@@ -1,0 +1,10 @@
+.cache/
+dump/
+demo/out/
+build/
+_/
+*.hl
+*.js
+*.exe
+*.dll
+*.so
