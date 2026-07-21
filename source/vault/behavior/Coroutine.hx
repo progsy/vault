@@ -13,7 +13,7 @@ class Coroutine {
 	var names:Map<String, Int> = [];
 	var currentIndex:Int = -1;
 	var maxStep:Int;
-	var steppedManually:Bool;
+	var stepped:Bool;
 
 	public var running(default, null):Bool;
 
@@ -29,7 +29,7 @@ class Coroutine {
 
 	public inline function resume():Bool {
 		if (running && currentIndex >= 0 && currentIndex < maxStep && coordinator != null) {
-			steppedManually = false;
+			stepped = false;
 			coordinator();
 			return true;
 		}
@@ -40,19 +40,24 @@ class Coroutine {
 		var index = names.get(step);
 		if (index != null) {
 			currentIndex = index;
-			steppedManually = true;
+			stepped = true;
 			return true;
 		}
 		return false;
 	}
 
-	public inline function stepBack():Void {
-		currentIndex -= 1;
-		steppedManually = true;
+	public inline function stepForward(steps:Int = 1):Void {
+		currentIndex += 1;
+		stepped = true;
+	}
+
+	public inline function stepBack(steps:Int = 1):Void {
+		currentIndex -= steps;
+		stepped = true;
 	}
 
 	public inline function stick():Void {
-		steppedManually = true;
+		stepped = true;
 	}
 
 	public inline function stop():Void {
@@ -68,70 +73,95 @@ class Coroutine {
 	}
 
 	public macro function set(_this:Expr, body:Expr):Expr {
-		var variableExprs:Array<Expr> = [];
-		var stepBlockExprs:Array<Expr> = [];
-		var stepBlockNames:Array<String> = [];
-		var essentialGeneralExprs:Array<Expr> = [];
-		var generalExprs:Array<Expr> = [];
+		var globalVariableExprs:Array<Expr> = [];
+		var preSwitchExprs:Array<Expr> = [];
+		var postSwitchExprs:Array<Expr> = [];
+		var steps:Array<{
+			name:String,
+			expr:Expr,
+			isolatedExpr:Expr,
+			depth:Int,
+			index:Int
+		}> = [];
+		var subSteps:Array<{
+			name:String,
+			expr:Expr,
+			isolatedExpr:Expr,
+			depth:Int,
+			index:Int
+		}> = [];
 		var coordinatorExpr:Expr = macro {};
 		var coordinatorCases:Array<Case> = [];
+		var depthSteps:Map<Int, Int> = [];
 		coordinatorExpr.expr = ESwitch(macro $_this.currentIndex, coordinatorCases, null);
 
-		function addStep(s:MetadataEntry, e:Expr) {
-			var name:String;
-			if (s.params != null) {
-				if (s.params.length > 0) {
-					name = s.params[0].getValue();
+		function checkStep(expr:Expr, sub:Bool) {
+			function isolateExpr(expr:Expr) {
+				return switch (expr.expr) {
+					case EMeta(s, e) if (s.name == ":step"):
+						if (sub) {
+							checkStep(expr, true);
+						}
+						expr = macro {};
+					default:
+						expr.map(isolateExpr);
 				}
 			}
-			stepBlockExprs.push(e);
-			stepBlockNames.push(name);
-		}
-
-		switch (body.expr) {
-			case EBlock(exprs):
-				for (expr in exprs) {
-					switch (expr.expr) {
-						case EMeta(s, e) if (s.name == ":step"):
-							addStep(s, e);
-						case EVars(vars):
-							variableExprs.push(expr);
-						default:
+			switch (expr.expr) {
+				case EMeta(s, e) if (s.name == ":step"):
+					var name:String;
+					if (s.params != null) {
+						if (s.params.length > 0) {
+							name = s.params[0].getValue();
+						}
 					}
-				}
-			default:
+					var step = {
+						name: name,
+						expr: expr,
+						isolatedExpr: expr.map(isolateExpr),
+						depth: 0,
+						index: steps.length
+					};
+					depthSteps.set(step.depth, (depthSteps.get(step.depth) ?? 0) + 1);
+					steps.push(step);
+				case EVars(vars) if (!sub):
+					globalVariableExprs.push(expr);
+				default:
+			}
+		}
+		body.iter(checkStep.bind(_, false));
+		for (i in 0...steps.length) {
+			steps[i].expr.iter(checkStep.bind(_, false));
 		}
 
-		essentialGeneralExprs.push(macro $_this.names.clear());
-		for (i in 0...stepBlockExprs.length) {
-			if (i == stepBlockExprs.length - 1) {
+		preSwitchExprs.push(macro $_this.names.clear());
+		for (step in steps) {
+			if (step.index == depthSteps.get(step.depth) - 1) {
 				coordinatorCases.push({
-					values: [macro $v{i}],
+					values: [macro $v{step.index}],
 					expr: macro {
-						@:noPrivateAccess ${stepBlockExprs[i]};
+						${step.expr};
 						$_this.stop();
 					}
 				});
 			} else {
 				coordinatorCases.push({
-					values: [macro $v{i}],
+					values: [macro $v{step.index}],
 					expr: macro {
-						@:noPrivateAccess ${stepBlockExprs[i]};
-						if (!$_this.steppedManually) {
-							$_this.currentIndex++;
+						${step.expr};
+						if (!$_this.stepped) {
+							$_this.stepForward();
 						}
 					}
 				});
 			}
-			if (stepBlockNames[i] != null) {
-				generalExprs.push(macro $_this.names.set($v{stepBlockNames[i]}, $v{i}));
+			if (step.name != null) {
+				postSwitchExprs.push(macro $_this.names.set($v{step.name}, $v{step.index}));
 			}
 		}
-		generalExprs.push(macro $_this.coordinator = () -> $coordinatorExpr);
-		generalExprs.push(macro $_this.maxStep = $v{coordinatorCases.length});
+		postSwitchExprs.push(macro $_this.coordinator = () -> $coordinatorExpr);
+		postSwitchExprs.push(macro $_this.maxStep = $v{coordinatorCases.length});
 
-		return macro @:privateAccess {
-			$b{variableExprs.concat(essentialGeneralExprs).concat(generalExprs)};
-		};
+		return macro @:privateAccess $b{globalVariableExprs.concat(preSwitchExprs).concat(postSwitchExprs)};
 	}
 }
