@@ -1,5 +1,7 @@
 package vault.behavior;
 
+import haxe.macro.Type.TypedExpr;
+import haxe.macro.Context;
 import haxe.macro.Expr;
 import haxe.macro.Expr.MetadataEntry;
 
@@ -11,24 +13,24 @@ using haxe.macro.TypeTools;
 class Coroutine {
 	var coordinator:() -> Void;
 	var names:Map<String, Int> = [];
-	var currentIndex:Int = -1;
-	var maxStep:Int;
 	var stepped:Bool;
 
 	public var running(default, null):Bool;
+	public var currentInstruction(default, null):Int;
+	public var instructionCount(default, null):Int;
 
 	public function new() {}
 
 	public inline function run() {
 		if (coordinator != null && !running) {
-			currentIndex = 0;
+			currentInstruction = 0;
 			running = true;
 			resume();
 		}
 	}
 
 	public inline function resume():Bool {
-		if (running && currentIndex >= 0 && currentIndex < maxStep && coordinator != null) {
+		if (running && currentInstruction >= 0 && currentInstruction < instructionCount && coordinator != null) {
 			stepped = false;
 			coordinator();
 			return true;
@@ -39,7 +41,7 @@ class Coroutine {
 	public inline function jump(step:String):Bool {
 		var index = names.get(step);
 		if (index != null) {
-			currentIndex = index;
+			currentInstruction = index;
 			stepped = true;
 			return true;
 		}
@@ -47,12 +49,12 @@ class Coroutine {
 	}
 
 	public inline function stepForward(steps:Int = 1):Void {
-		currentIndex += 1;
+		currentInstruction += 1;
 		stepped = true;
 	}
 
 	public inline function stepBack(steps:Int = 1):Void {
-		currentIndex -= steps;
+		currentInstruction -= steps;
 		stepped = true;
 	}
 
@@ -62,7 +64,6 @@ class Coroutine {
 
 	public inline function stop():Void {
 		if (running) {
-			currentIndex = -1;
 			running = false;
 		}
 	}
@@ -73,7 +74,11 @@ class Coroutine {
 	}
 
 	public macro function set(_this:Expr, body:Expr):Expr {
-		var globalVariableExprs:Array<Expr> = [];
+		var globalVariables:Array<{
+			name:String,
+			expr:Expr,
+			scope:Array<String>,
+		}> = [];
 		var preSwitchExprs:Array<Expr> = [];
 		var postSwitchExprs:Array<Expr> = [];
 		var steps:Array<{
@@ -83,25 +88,15 @@ class Coroutine {
 			depth:Int,
 			index:Int
 		}> = [];
-		var subSteps:Array<{
-			name:String,
-			expr:Expr,
-			isolatedExpr:Expr,
-			depth:Int,
-			index:Int
-		}> = [];
 		var coordinatorExpr:Expr = macro {};
 		var coordinatorCases:Array<Case> = [];
 		var depthSteps:Map<Int, Int> = [];
-		coordinatorExpr.expr = ESwitch(macro $_this.currentIndex, coordinatorCases, null);
+		coordinatorExpr.expr = ESwitch(macro $_this.currentInstruction, coordinatorCases, null);
 
-		function checkStep(expr:Expr, sub:Bool) {
+		function addStep(expr:Expr) {
 			function isolateExpr(expr:Expr) {
 				return switch (expr.expr) {
 					case EMeta(s, e) if (s.name == ":step"):
-						if (sub) {
-							checkStep(expr, true);
-						}
 						expr = macro {};
 					default:
 						expr.map(isolateExpr);
@@ -124,14 +119,53 @@ class Coroutine {
 					};
 					depthSteps.set(step.depth, (depthSteps.get(step.depth) ?? 0) + 1);
 					steps.push(step);
-				case EVars(vars) if (!sub):
-					globalVariableExprs.push(expr);
+				case EVars(vars):
+					for (i in 0...vars.length) {
+						globalVariables.push({
+							name: vars[i].name,
+							expr: i == 0 ? expr : null,
+							scope: []
+						});
+					}
+				case EMeta(s, e) if (s.name == ":scope"):
+					switch (e.expr) {
+						case EVars(vars):
+							for (i in 0...vars.length) {
+								globalVariables.push({
+									name: vars[i].name,
+									expr: i == 0 ? expr : null,
+									scope: [for (p in s.params) p.getValue()]
+								});
+							}
+						default:
+					}
 				default:
 			}
 		}
-		body.iter(checkStep.bind(_, false));
+		body.iter(addStep);
 		for (i in 0...steps.length) {
-			steps[i].expr.iter(checkStep.bind(_, false));
+			function scopeOut(expr:Expr) {
+				switch (expr.expr) {
+					case EConst(c):
+						switch (c) {
+							case CIdent(s):
+								var variables = Context.getLocalVars();
+								for (gv in globalVariables) {
+									if (gv.name == s && gv.scope.length > 0) {
+										if (!gv.scope.contains(steps[i].name)) {
+											variables.remove(gv.name);
+											Context.typeExpr(expr);
+										}
+									}
+								}
+							default:
+						}
+					default:
+				}
+				expr.iter(scopeOut);
+			}
+			steps[i].expr.iter(scopeOut);
+			steps[i].expr.iter(addStep);
 		}
 
 		preSwitchExprs.push(macro $_this.names.clear());
@@ -160,8 +194,8 @@ class Coroutine {
 			}
 		}
 		postSwitchExprs.push(macro $_this.coordinator = () -> $coordinatorExpr);
-		postSwitchExprs.push(macro $_this.maxStep = $v{coordinatorCases.length});
+		postSwitchExprs.push(macro $_this.instructionCount = $v{coordinatorCases.length});
 
-		return macro @:privateAccess $b{globalVariableExprs.concat(preSwitchExprs).concat(postSwitchExprs)};
+		return macro @:privateAccess $b{[for (v in globalVariables) if (v.expr != null) v.expr].concat(preSwitchExprs).concat(postSwitchExprs)};
 	}
 }
