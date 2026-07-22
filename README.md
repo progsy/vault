@@ -76,7 +76,7 @@ coro.restart();
 ```
 This should output something like:
 ```
-(Tick 1)
+(Start)(Tick 1)
 We will be generating a random number and check if it is even or odd.
 (Tick 2)
 Are you ready?
@@ -88,7 +88,7 @@ Generating...
 We generated the number 559976683.
 (Tick 6)
 The number is odd.
-(Restart)
+(Restart)(Tick 7)
 Last number (559976683) was odd.
 ```
 Nesting is possible but nested variables will not be captured as they are considered local.
