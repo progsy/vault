@@ -174,7 +174,7 @@ class Coroutine {
 				coordinatorCases.push({
 					values: [macro $v{step.index}],
 					expr: macro {
-						${step.expr};
+						@:noPrivateAccess ${step.expr};
 						$_this.stop();
 					}
 				});
@@ -182,7 +182,7 @@ class Coroutine {
 				coordinatorCases.push({
 					values: [macro $v{step.index}],
 					expr: macro {
-						${step.expr};
+						@:noPrivateAccess ${step.expr};
 						if (!$_this.stepped) {
 							$_this.stepForward();
 						}
