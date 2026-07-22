@@ -69,34 +69,65 @@ class Coroutine {
 	}
 
 	public macro function set(_this:Expr, body:Expr):Expr {
-		var globalVariables:Array<{
+		var capturedVariables:Array<{
 			name:String,
 			expr:Expr,
 			scope:Array<String>,
+			// stackScoop:{branch:Int, depth:Int, index:Int}
 		}> = [];
-		var preSwitchExprs:Array<Expr> = [];
-		var postSwitchExprs:Array<Expr> = [];
+		var stackInfo:Map<Int, Map<Int, Int>> = []; // branch -> depth -> step
 		var steps:Array<{
 			label:String,
 			expr:Expr,
 			isolatedExpr:Expr,
+			branch:Int,
 			depth:Int,
 			index:Int
 		}> = [];
+		var preSwitchExprs:Array<Expr> = [];
+		var postSwitchExprs:Array<Expr> = [];
 		var coordinatorExpr:Expr = macro {};
 		var coordinatorCases:Array<Case> = [];
-		var depthSteps:Map<Int, Int> = [];
+		// var depthSteps:Map<Int, Int> = [];
 		coordinatorExpr.expr = ESwitch(macro $_this.currentInstruction, coordinatorCases, null);
 
-		function submitStep(expr:Expr) {
-			function isolateExpr(expr:Expr) {
-				return switch (expr.expr) {
-					case EMeta(s, e) if (s.name == ":step"):
-						expr = macro {};
-					default:
-						expr.map(isolateExpr);
-				}
+		function isolateExpr(expr:Expr) {
+			return switch (expr.expr) {
+				case EMeta(s, e) if (s.name == ":step"):
+					expr = macro {};
+				default:
+					expr.map(isolateExpr);
 			}
+		}
+		function scopeOut(label:String, expr:Expr) {
+			switch (expr.expr) {
+				case EConst(c):
+					switch (c) {
+						case CIdent(s):
+							var variables = Context.getLocalVars();
+							for (gv in capturedVariables) {
+								if (gv.name == s && gv.scope.length > 0) {
+									if (!gv.scope.contains(label)) {
+										variables.remove(gv.name);
+										Context.typeExpr(expr);
+									}
+								}
+							}
+						default:
+					}
+				default:
+			}
+			expr.iter(scopeOut.bind(label, _));
+		}
+
+		var stackIndex:Map<Int, Map<Int, Int>> = [];
+		var nextBranch = 0;
+		function submitStep(expr:Expr, depth:Int) {
+			var actualDepth = Std.int(depth / 2);
+			if (!stackIndex.exists(nextBranch)) {
+				stackIndex.set(nextBranch, []);
+			}
+			var index = stackIndex.get(nextBranch).get(actualDepth) ?? 0;
 			switch (expr.expr) {
 				case EMeta(s, e) if (s.name == ":step"):
 					var label:String;
@@ -105,18 +136,26 @@ class Coroutine {
 							label = s.params[0].getValue();
 						}
 					}
+					expr.iter(scopeOut.bind(label, _));
 					var step = {
 						label: label,
 						expr: expr,
 						isolatedExpr: expr.map(isolateExpr),
-						depth: 0,
-						index: steps.length
+						branch: nextBranch,
+						depth: actualDepth,
+						index: index
 					};
-					depthSteps.set(step.depth, (depthSteps.get(step.depth) ?? 0) + 1);
+					stackIndex.get(nextBranch).set(actualDepth, index + 1);
 					steps.push(step);
+				default:
+			}
+			expr.iter(submitStep.bind(_, ++depth));
+		}
+		function captureVariable(expr:Expr) {
+			switch (expr.expr) {
 				case EVars(vars):
 					for (i in 0...vars.length) {
-						globalVariables.push({
+						capturedVariables.push({
 							name: vars[i].name,
 							expr: i == 0 ? expr : null,
 							scope: []
@@ -126,7 +165,7 @@ class Coroutine {
 					switch (e.expr) {
 						case EVars(vars):
 							for (i in 0...vars.length) {
-								globalVariables.push({
+								capturedVariables.push({
 									name: vars[i].name,
 									expr: i == 0 ? expr : null,
 									scope: [for (p in s.params) p.getValue()]
@@ -137,47 +176,35 @@ class Coroutine {
 				default:
 			}
 		}
-		body.iter(submitStep);
-		for (i in 0...steps.length) {
-			function scopeOut(expr:Expr) {
-				switch (expr.expr) {
-					case EConst(c):
-						switch (c) {
-							case CIdent(s):
-								var variables = Context.getLocalVars();
-								for (gv in globalVariables) {
-									if (gv.name == s && gv.scope.length > 0) {
-										if (!gv.scope.contains(steps[i].label)) {
-											variables.remove(gv.name);
-											Context.typeExpr(expr);
-										}
-									}
-								}
-							default:
-						}
-					default:
-				}
-				expr.iter(scopeOut);
+		body.iter(captureVariable);
+		body.iter((expr) -> {
+			submitStep(expr, 0);
+			switch (expr.expr) {
+				case EMeta(s, e) if (s.name == ":step"):
+					nextBranch++;
+				default:
 			}
-			steps[i].expr.iter(scopeOut);
-			steps[i].expr.iter(submitStep);
+		});
+		for (step in steps) {
+			trace('${step.branch}:${step.depth}:${step.index} ${step.expr.toString()}');
 		}
 
 		preSwitchExprs.push(macro $_this.labelledInstructions.clear());
-		for (step in steps) {
-			if (step.index == depthSteps.get(step.depth) - 1) {
+		for (i in 0...steps.length) {
+			var step = steps[i];
+			if (i == steps.length - 1) {
 				coordinatorCases.push({
-					values: [macro $v{step.index}],
+					values: [macro $v{i}],
 					expr: macro {
-						@:noPrivateAccess ${step.expr};
+						@:noPrivateAccess ${step.isolatedExpr};
 						$_this.stop();
 					}
 				});
 			} else {
 				coordinatorCases.push({
-					values: [macro $v{step.index}],
+					values: [macro $v{i}],
 					expr: macro {
-						@:noPrivateAccess ${step.expr};
+						@:noPrivateAccess ${step.isolatedExpr};
 						if (!$_this.stepped) {
 							$_this.step(1);
 						}
@@ -185,12 +212,12 @@ class Coroutine {
 				});
 			}
 			if (step.label != null) {
-				postSwitchExprs.push(macro $_this.labelledInstructions.set($v{step.label}, $v{step.index}));
+				postSwitchExprs.push(macro $_this.labelledInstructions.set($v{step.label}, $v{i}));
 			}
 		}
 		postSwitchExprs.push(macro $_this.coordinator = () -> $coordinatorExpr);
 		postSwitchExprs.push(macro $_this.instructionCount = $v{coordinatorCases.length});
 
-		return macro @:privateAccess $b{[for (v in globalVariables) if (v.expr != null) v.expr].concat(preSwitchExprs).concat(postSwitchExprs)};
+		return macro @:privateAccess $b{[for (v in capturedVariables) if (v.expr != null) v.expr].concat(preSwitchExprs).concat(postSwitchExprs)};
 	}
 }
