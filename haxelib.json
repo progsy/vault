@@ -3,7 +3,7 @@
 	"url": "https://github.com/progsy/vault",
 	"license": "MIT",
 	"description": "Game-oriented library for game development",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"releasenote": "",
 	"contributors": [
 		"progsy"
