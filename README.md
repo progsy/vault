@@ -19,8 +19,10 @@ inline function isEven(num:Int):Bool {
 }
 
 coro.set({
-    // This variable will be available throughout the lifetime of this coroutine.
+    // This variable will be available throughout the lifetime of the coroutine.
     var number:Null<Int> = null;
+    // This variable is only accessible form "Odd" step.
+    @:scope("Odd") var onlyInOdd:Bool;
 
     @:step {
         // Remember the last result.
@@ -30,34 +32,54 @@ coro.set({
         } else {
             trace('We will be generating a random number and check if it is even or odd.');
         }
+        // We can have nested steps (with caveats).
+        @:step {
+            trace('Are you ready?');
+            @:step {
+                trace('Good.');
+            }
+        }
+        @:step {
+            trace('Generating...');
+        }
     };
 
     @:step {
         number = Std.random(0x4FFFFFFF);
         trace('We generated the number $number.');
         if (isEven(number)) {
+            // We skip "Odd" and jump directly to "Even".
             coro.jump("Even");
         }
     };
 
-    @:step {
+    // We can label the step to enable jumping
+    @:step("Odd") {
+        onlyInOdd = true;
         trace('The number is odd.');
-        // We have to explictly stop the coroutine otherwise it will execute the next step.
+         // We have to explictly stop the coroutine otherwise it will execute the very next step.
         coro.stop();
     }
 
-    // We can label the step to enable jumping
     @:step("Even") {
         trace('The number is even.');
     }
 });
 trace('(Tick 1)');
 coro.run();
-trace('(Tick 2)');
-coro.resume();
-trace('(Tick 3)');
-coro.resume();
-trace('(Tick 4)');
+for (i in 1...coro.instructionCount - 1) {
+    trace('(Tick ${i + 1})');
+    coro.resume();
+}
+trace('(Tick ${coro.instructionCount})');
+coro.restart();
+trace('(Tick 1)');
+coro.run();
+for (i in 1...coro.instructionCount - 1) {
+    trace('(Tick ${i + 1})');
+    coro.resume();
+}
+trace('(Restart)');
 coro.restart();
 ```
 This should output something like:
@@ -65,12 +87,19 @@ This should output something like:
 (Tick 1)
 We will be generating a random number and check if it is even or odd.
 (Tick 2)
-We generated the number 923949475.
+Are you ready?
 (Tick 3)
-The number is odd.
+Good.
 (Tick 4)
-Last number (923949475) was odd.
+Generating...
+(Tick 5)
+We generated the number 559976683.
+(Tick 6)
+The number is odd.
+(Restart)
+Last number (559976683) was odd.
 ```
+Nesting is possible but nested variables will not be captured as they are considered local.
 
 ## Experimental
 Experimental features are available in the experimental package. Those features HAVE NOT been polished yet and MIGHT NOT work as expected. Please don't use them in production. 
