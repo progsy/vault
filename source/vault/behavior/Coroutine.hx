@@ -12,7 +12,7 @@ using haxe.macro.TypeTools;
 
 class Coroutine {
 	var coordinator:() -> Void;
-	var names:Map<String, Int> = [];
+	var labelledInstructions:Map<String, Int> = [];
 	var stepped:Bool;
 
 	public var running(default, null):Bool;
@@ -25,7 +25,9 @@ class Coroutine {
 		if (coordinator != null && !running) {
 			currentInstruction = 0;
 			running = true;
-			resume();
+			if (!resume()) {
+				running = false;
+			}
 		}
 	}
 
@@ -39,7 +41,7 @@ class Coroutine {
 	}
 
 	public inline function jump(step:String):Bool {
-		var index = names.get(step);
+		var index = labelledInstructions.get(step);
 		if (index != null) {
 			currentInstruction = index;
 			stepped = true;
@@ -58,9 +60,7 @@ class Coroutine {
 	}
 
 	public inline function stop():Void {
-		if (running) {
-			running = false;
-		}
+		running = false;
 	}
 
 	public inline function restart():Void {
@@ -77,7 +77,7 @@ class Coroutine {
 		var preSwitchExprs:Array<Expr> = [];
 		var postSwitchExprs:Array<Expr> = [];
 		var steps:Array<{
-			name:String,
+			label:String,
 			expr:Expr,
 			isolatedExpr:Expr,
 			depth:Int,
@@ -88,7 +88,7 @@ class Coroutine {
 		var depthSteps:Map<Int, Int> = [];
 		coordinatorExpr.expr = ESwitch(macro $_this.currentInstruction, coordinatorCases, null);
 
-		function addStep(expr:Expr) {
+		function submitStep(expr:Expr) {
 			function isolateExpr(expr:Expr) {
 				return switch (expr.expr) {
 					case EMeta(s, e) if (s.name == ":step"):
@@ -99,14 +99,14 @@ class Coroutine {
 			}
 			switch (expr.expr) {
 				case EMeta(s, e) if (s.name == ":step"):
-					var name:String;
+					var label:String;
 					if (s.params != null) {
 						if (s.params.length > 0) {
-							name = s.params[0].getValue();
+							label = s.params[0].getValue();
 						}
 					}
 					var step = {
-						name: name,
+						label: label,
 						expr: expr,
 						isolatedExpr: expr.map(isolateExpr),
 						depth: 0,
@@ -137,7 +137,7 @@ class Coroutine {
 				default:
 			}
 		}
-		body.iter(addStep);
+		body.iter(submitStep);
 		for (i in 0...steps.length) {
 			function scopeOut(expr:Expr) {
 				switch (expr.expr) {
@@ -147,7 +147,7 @@ class Coroutine {
 								var variables = Context.getLocalVars();
 								for (gv in globalVariables) {
 									if (gv.name == s && gv.scope.length > 0) {
-										if (!gv.scope.contains(steps[i].name)) {
+										if (!gv.scope.contains(steps[i].label)) {
 											variables.remove(gv.name);
 											Context.typeExpr(expr);
 										}
@@ -160,10 +160,10 @@ class Coroutine {
 				expr.iter(scopeOut);
 			}
 			steps[i].expr.iter(scopeOut);
-			steps[i].expr.iter(addStep);
+			steps[i].expr.iter(submitStep);
 		}
 
-		preSwitchExprs.push(macro $_this.names.clear());
+		preSwitchExprs.push(macro $_this.labelledInstructions.clear());
 		for (step in steps) {
 			if (step.index == depthSteps.get(step.depth) - 1) {
 				coordinatorCases.push({
@@ -184,8 +184,8 @@ class Coroutine {
 					}
 				});
 			}
-			if (step.name != null) {
-				postSwitchExprs.push(macro $_this.names.set($v{step.name}, $v{step.index}));
+			if (step.label != null) {
+				postSwitchExprs.push(macro $_this.labelledInstructions.set($v{step.label}, $v{step.index}));
 			}
 		}
 		postSwitchExprs.push(macro $_this.coordinator = () -> $coordinatorExpr);
