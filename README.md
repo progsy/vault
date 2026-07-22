@@ -65,21 +65,13 @@ coro.set({
         trace('The number is even.');
     }
 });
-trace('(Tick 1)');
+trace('(Start)(Tick 1)');
 coro.run();
 for (i in 1...coro.instructionCount - 1) {
     trace('(Tick ${i + 1})');
     coro.resume();
 }
-trace('(Tick ${coro.instructionCount})');
-coro.restart();
-trace('(Tick 1)');
-coro.run();
-for (i in 1...coro.instructionCount - 1) {
-    trace('(Tick ${i + 1})');
-    coro.resume();
-}
-trace('(Restart)');
+trace('(Restart)(${coro.instructionCount})');
 coro.restart();
 ```
 This should output something like:
