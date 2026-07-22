@@ -48,13 +48,8 @@ class Coroutine {
 		return false;
 	}
 
-	public inline function stepForward(steps:Int = 1):Void {
-		currentInstruction += 1;
-		stepped = true;
-	}
-
-	public inline function stepBack(steps:Int = 1):Void {
-		currentInstruction -= steps;
+	public inline function step(steps:Int = 1):Void {
+		currentInstruction += steps;
 		stepped = true;
 	}
 
@@ -184,7 +179,7 @@ class Coroutine {
 					expr: macro {
 						@:noPrivateAccess ${step.expr};
 						if (!$_this.stepped) {
-							$_this.stepForward();
+							$_this.step(1);
 						}
 					}
 				});
