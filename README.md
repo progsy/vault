@@ -19,10 +19,8 @@ inline function isEven(num:Int):Bool {
 }
 
 coro.set({
-    // This variable will be available throughout the lifetime of the coroutine.
+    // This variable will be available throughout the lifetime of the coroutine for all steps.
     var number:Null<Int> = null;
-    // This variable is only accessible form "Odd" step.
-    @:scope("Odd") var onlyInOdd:Bool;
 
     @:step {
         // Remember the last result.
@@ -32,12 +30,14 @@ coro.set({
         } else {
             trace('We will be generating a random number and check if it is even or odd.');
         }
-        // We can have nested steps (with caveats).
+
+        // This variable is initially set to 0.0, but whenever we execute this step we set it to 3.14.
+        @:overwrite(3.14) var pi = 0.0;
+
         @:step {
-            trace('Are you ready?');
-            @:step {
-                trace('Good.');
-            }
+            // Load the variable pi from the previous step.
+            @:load var pi;
+            trace('Before we start here is a fun fact: pi is equal to $pi');
         }
         @:step {
             trace('Generating...');
@@ -55,9 +55,8 @@ coro.set({
 
     // We can label the step to enable jumping
     @:step("Odd") {
-        onlyInOdd = true;
         trace('The number is odd.');
-         // We have to explictly stop the coroutine otherwise it will execute the very next step.
+        // We have to explictly stop the coroutine here otherwise it will execute the very next step.
         coro.stop();
     }
 
@@ -79,19 +78,16 @@ This should output something like:
 (Start)(Tick 1)
 We will be generating a random number and check if it is even or odd.
 (Tick 2)
-Are you ready?
+Before we start here is a fun fact: pi is equal to 3.14
 (Tick 3)
-Good.
-(Tick 4)
 Generating...
-(Tick 5)
+(Tick 4)
 We generated the number 559976683.
-(Tick 6)
+(Tick 5)
 The number is odd.
-(Restart)(Tick 7)
+(Restart)(Tick 6)
 Last number (559976683) was odd.
 ```
-Nesting is possible but nested variables will not be captured as they are considered local.
 
 ## Experimental
 Experimental features are available in the experimental package. Those features HAVE NOT been polished yet and MIGHT NOT work as expected. Please don't use them in production. 
