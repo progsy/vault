@@ -10,6 +10,23 @@ using haxe.macro.ExprTools;
 using haxe.macro.TypedExprTools;
 using haxe.macro.TypeTools;
 
+typedef Step = {
+	label:String,
+	expr:Expr,
+	isolatedExpr:Expr,
+	capturedVariables:Array<CapturedVariable>,
+	branch:Int,
+	depth:Int,
+	index:Int
+};
+
+typedef CapturedVariable = {
+	name:String,
+	mangledName:String,
+	expr:Expr,
+	?scope:{branch:Int, depth:Int, index:Int}
+};
+
 class Coroutine {
 	var coordinator:() -> Void;
 	var labelledInstructions:Map<String, Int> = [];
@@ -69,57 +86,123 @@ class Coroutine {
 	}
 
 	public macro function set(_this:Expr, body:Expr):Expr {
-		var capturedVariables:Array<{
-			name:String,
-			expr:Expr,
-			scope:Array<String>,
-			// stackScoop:{branch:Int, depth:Int, index:Int}
-		}> = [];
-		var stackInfo:Map<Int, Map<Int, Int>> = []; // branch -> depth -> step
-		var steps:Array<{
-			label:String,
-			expr:Expr,
-			isolatedExpr:Expr,
-			branch:Int,
-			depth:Int,
-			index:Int
-		}> = [];
+		var steps:Array<Step> = [];
+		var capturedVariables:Array<CapturedVariable> = [];
 		var preSwitchExprs:Array<Expr> = [];
 		var postSwitchExprs:Array<Expr> = [];
 		var coordinatorExpr:Expr = macro {};
 		var coordinatorCases:Array<Case> = [];
-		// var depthSteps:Map<Int, Int> = [];
 		coordinatorExpr.expr = ESwitch(macro $_this.currentInstruction, coordinatorCases, null);
+
+		function unrollMeta(expr:Expr) {
+			return switch (expr.expr) {
+				case EMeta(s, e):
+					unrollMeta(e);
+				default:
+					expr;
+			}
+		}
+
+		function isVariableLoaded(expr:Expr, name:String):Bool {
+			var found = false;
+			function checkLoad(e:Expr) {
+				switch (e.expr) {
+					case EMeta(s, subExpr) if (s.name == ":load"):
+						switch (unrollMeta(subExpr).expr) {
+							case EVars(vars):
+								for (v in vars) {
+									if (v.name == name) {
+										found = true;
+									}
+								}
+							default:
+						}
+					default:
+				}
+				if (!found) {
+					e.iter(checkLoad);
+				}
+			}
+			expr.iter(checkLoad);
+			return found;
+		}
 
 		function isolateExpr(expr:Expr) {
 			return switch (expr.expr) {
 				case EMeta(s, e) if (s.name == ":step"):
-					expr = macro {};
+					macro {};
 				default:
 					expr.map(isolateExpr);
 			}
 		}
-		function scopeOut(label:String, expr:Expr) {
+
+		function load(expr:Expr, step:Step) {
 			switch (expr.expr) {
-				case EConst(c):
-					switch (c) {
-						case CIdent(s):
-							var variables = Context.getLocalVars();
-							for (gv in capturedVariables) {
-								if (gv.name == s && gv.scope.length > 0) {
-									if (!gv.scope.contains(label)) {
-										variables.remove(gv.name);
-										Context.typeExpr(expr);
+				case EMeta(s, e) if (s.name == ":load"):
+					switch (e.map(unrollMeta).expr) {
+						case EVars(vars):
+							for (i in 0...vars.length) {
+								var v = vars[i];
+								var cvc:CapturedVariable = null;
+								for (cv in step.capturedVariables) {
+									if (cv.name == v.name && step.depth >= cv.scope.depth) {
+										if (cvc == null || cv.scope.depth >= cvc.scope.depth) {
+											cvc = cv;
+										}
 									}
 								}
+								if (cvc == null) {
+									for (cv in capturedVariables) {
+										if (cv.name == v.name) {
+											cvc = cv;
+										}
+									}
+								}
+								if (cvc != null) {
+									var cv = cvc;
+									var name = v.name;
+									if (cv.mangledName != null) {
+										if (!capturedVariables.contains(cv)) {
+											if (Context.getDisplayMode() == None) {
+												capturedVariables.push(cv);
+											} else {
+												var retE:Expr = {pos: expr.pos, expr: cv.expr.expr};
+												switch (retE.expr) {
+													case EVars(vars2):
+														vars2[i].name = vars[i].name;
+													default:
+												}
+												return retE;
+											}
+											for (ss in steps) {
+												if (ss.depth == cv.scope.depth && ss.index == cv.scope.index && ss.branch == cv.scope.branch) {
+													switch (unrollMeta(ss.isolatedExpr).expr) {
+														case EBlock(exprs):
+															exprs.push(macro $i{cv.mangledName} = $i{name});
+														default:
+													}
+													break;
+												}
+											}
+										}
+										switch (unrollMeta(step.isolatedExpr).expr) {
+											case EBlock(exprs):
+												exprs.push(macro $i{cv.mangledName} = $i{name});
+											default:
+										}
+										return macro var $name = $i{cv.mangledName};
+									} else {
+										return macro {};
+									}
+								}
+								Context.error("Couldn't load the variable: " + v.name, expr.pos);
 							}
 						default:
 					}
 				default:
 			}
-			expr.iter(scopeOut.bind(label, _));
+			return expr.map(load.bind(_, step));
 		}
-
 		var stackIndex:Map<Int, Map<Int, Int>> = [];
 		var nextBranch = 0;
 		function submitStep(expr:Expr, depth:Int) {
@@ -130,17 +213,17 @@ class Coroutine {
 			var index = stackIndex.get(nextBranch).get(actualDepth) ?? 0;
 			switch (expr.expr) {
 				case EMeta(s, e) if (s.name == ":step"):
-					var label:String;
+					var label:String = null;
 					if (s.params != null) {
 						if (s.params.length > 0) {
 							label = s.params[0].getValue();
 						}
 					}
-					expr.iter(scopeOut.bind(label, _));
 					var step = {
 						label: label,
 						expr: expr,
-						isolatedExpr: expr.map(isolateExpr),
+						isolatedExpr: null,
+						capturedVariables: [],
 						branch: nextBranch,
 						depth: actualDepth,
 						index: index
@@ -151,32 +234,66 @@ class Coroutine {
 			}
 			expr.iter(submitStep.bind(_, ++depth));
 		}
-		function captureVariable(expr:Expr) {
+
+		function captureVariable(expr:Expr, step:Step, nestLevel:Int, overwrite:Expr) {
 			switch (expr.expr) {
+				case EMeta(s, e) if (s.name == ":overwrite"):
+					captureVariable(e, step, nestLevel, s.params[0]);
 				case EVars(vars):
 					for (i in 0...vars.length) {
-						capturedVariables.push({
-							name: vars[i].name,
-							expr: i == 0 ? expr : null,
-							scope: []
-						});
-					}
-				case EMeta(s, e) if (s.name == ":scope"):
-					switch (e.expr) {
-						case EVars(vars):
-							for (i in 0...vars.length) {
-								capturedVariables.push({
-									name: vars[i].name,
-									expr: i == 0 ? expr : null,
-									scope: [for (p in s.params) p.getValue()]
-								});
+						if (step != null) {
+							var loded = false;
+							for (j in (steps.indexOf(step) + 1)...steps.length) {
+								if (isVariableLoaded(steps[j].expr, vars[i].name)) {
+									loded = true;
+									break;
+								}
 							}
-						default:
+							if (loded) {
+								var initExpr = vars[i].expr;
+								var mangledName = '${vars[i].name}_${step.branch}_${step.depth}_${step.index}';
+								var type = null;
+								if (initExpr != null) {
+									type = Context.typeof(initExpr).toComplexType();
+								}
+								if (type == null && vars[i].type != null) {
+									type = vars[i].type;
+								}
+								if (overwrite == null) {
+									vars[i].expr = macro $i{mangledName};
+								} else {
+									vars[i].expr = overwrite;
+								}
+								if (type != null) {
+									vars[i].type = type;
+								}
+								var capturedVariable = {
+									name: vars[i].name,
+									mangledName: mangledName,
+									expr: initExpr != null ? (macro var $mangledName = $initExpr) : (type != null ? (macro var $mangledName:$type) : (macro var $mangledName)),
+									scope: {
+										branch: step.branch,
+										depth: step.depth,
+										index: step.index
+									}
+								};
+								step.capturedVariables.push(capturedVariable);
+							}
+						} else {
+							capturedVariables.push({
+								name: vars[i].name,
+								mangledName: null,
+								expr: expr
+							});
+						}
 					}
 				default:
 			}
+			if (nestLevel > 0) {
+				expr.iter(captureVariable.bind(_, step, nestLevel - 1, null));
+			}
 		}
-		body.iter(captureVariable);
+		body.iter(captureVariable.bind(_, null, 0, null));
 		body.iter((expr) -> {
 			submitStep(expr, 0);
 			switch (expr.expr) {
@@ -185,8 +302,30 @@ class Coroutine {
 				default:
 			}
 		});
-		for (step in steps) {
-			trace('${step.branch}:${step.depth}:${step.index} ${step.expr.toString()}');
+
+		for (i in 0...steps.length) {
+			steps[i].expr.iter(captureVariable.bind(_, steps[i], 1, null));
+		}
+
+		for (i in 0...steps.length) {
+			if (i > 0) {
+				for (j in 1...(i + 1)) {
+					for (cv in steps[i - j].capturedVariables) {
+						var alreadyHasIt = false;
+						for (pcv in steps[i].capturedVariables) {
+							if (pcv.name == cv.name)
+								alreadyHasIt = true;
+						}
+						if (!alreadyHasIt) {
+							steps[i].capturedVariables.push(cv);
+						}
+					}
+				}
+			}
+		}
+		for (i in 0...steps.length) {
+			steps[i].isolatedExpr = steps[i].expr.map(isolateExpr);
+			steps[i].isolatedExpr = steps[i].isolatedExpr.map(load.bind(_, steps[i]));
 		}
 
 		preSwitchExprs.push(macro $_this.labelledInstructions.clear());
