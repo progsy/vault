@@ -24,10 +24,13 @@ typedef CapturedVariable = {
 	name:String,
 	mangledName:String,
 	expr:Expr,
+	?resetExpr:Expr,
 	?scope:{branch:Int, depth:Int, index:Int}
 };
 
 class Coroutine {
+	static final RESET_VARIABLES_INSTRUCTION = 7777;
+
 	var coordinator:() -> Void;
 	var labelledInstructions:Map<String, Int> = [];
 	var stepped:Bool;
@@ -83,6 +86,17 @@ class Coroutine {
 	public inline function restart():Void {
 		stop();
 		run();
+	}
+
+	public inline function resetVariables():Bool {
+		if (coordinator != null) {
+			var oldInstruction = currentInstruction;
+			currentInstruction = RESET_VARIABLES_INSTRUCTION;
+			coordinator();
+			currentInstruction = oldInstruction;
+			return true;
+		}
+		return false;
 	}
 
 	public macro function set(_this:Expr, body:Expr):Expr {
@@ -235,10 +249,23 @@ class Coroutine {
 			expr.iter(submitStep.bind(_, ++depth));
 		}
 
-		function captureVariable(expr:Expr, step:Step, nestLevel:Int, overwrite:Expr) {
+		var overwriteExpr:Expr;
+		var resetExpr:Expr;
+		var resetMethodExpr:Expr;
+		function captureVariable(expr:Expr, step:Step, nestLevel:Int) {
 			switch (expr.expr) {
 				case EMeta(s, e) if (s.name == ":overwrite"):
-					captureVariable(e, step, nestLevel, s.params[0]);
+					overwriteExpr = s.params[0];
+					captureVariable(e, step, nestLevel);
+					overwriteExpr = null;
+				case EMeta(s, e) if (s.name == ":reset"):
+					resetExpr = s.params[0];
+					captureVariable(e, step, nestLevel);
+					resetExpr = null;
+				case EMeta(s, e) if (s.name == ":resetMethod"):
+					resetMethodExpr = s.params[0];
+					captureVariable(e, step, nestLevel);
+					resetMethodExpr = null;
 				case EVars(vars):
 					for (i in 0...vars.length) {
 						if (step != null) {
@@ -259,18 +286,24 @@ class Coroutine {
 								if (type == null && vars[i].type != null) {
 									type = vars[i].type;
 								}
-								if (overwrite == null) {
-									vars[i].expr = macro $i{mangledName};
-								} else {
-									vars[i].expr = overwrite;
-								}
 								if (type != null) {
 									vars[i].type = type;
+								}
+								var resetFunctionName:String;
+								var resetFunctionArguments:Array<Expr>;
+								if (resetMethodExpr != null) {
+									switch (resetMethodExpr.expr) {
+										case ECall(e, params):
+											resetFunctionName = e.toString();
+											resetFunctionArguments = params;
+										default:
+									}
 								}
 								var capturedVariable = {
 									name: vars[i].name,
 									mangledName: mangledName,
-									expr: initExpr != null ? (macro var $mangledName = $initExpr) : (type != null ? (macro var $mangledName:$type) : (macro var $mangledName)),
+									expr: initExpr != null ? (macro var $mangledName = $initExpr) : (macro var $mangledName:$type),
+									resetExpr: resetExpr != null ? macro $i{mangledName} = $resetExpr : resetMethodExpr != null ? macro $p{[mangledName, resetFunctionName]}($a{resetFunctionArguments}) : macro $i{mangledName} = ${vars[i].expr},
 									scope: {
 										branch: step.branch,
 										depth: step.depth,
@@ -278,22 +311,38 @@ class Coroutine {
 									}
 								};
 								step.capturedVariables.push(capturedVariable);
+								if (overwriteExpr == null) {
+									vars[i].expr = macro $i{mangledName};
+								} else {
+									vars[i].expr = overwriteExpr;
+								}
 							}
 						} else {
+							var resetFunctionName:String;
+							var resetFunctionArguments:Array<Expr>;
+							if (resetMethodExpr != null) {
+								switch (resetMethodExpr.expr) {
+									case ECall(e, params):
+										resetFunctionName = e.toString();
+										resetFunctionArguments = params;
+									default:
+								}
+							}
 							capturedVariables.push({
 								name: vars[i].name,
 								mangledName: null,
-								expr: expr
+								expr: expr,
+								resetExpr: resetExpr != null ? macro $i{vars[i].name} = $resetExpr : resetMethodExpr != null ? macro $p{[vars[i].name, resetFunctionName]}($a{resetFunctionArguments}) : macro $i{vars[i].name} = ${vars[i].expr},
 							});
 						}
 					}
 				default:
 			}
 			if (nestLevel > 0) {
-				expr.iter(captureVariable.bind(_, step, nestLevel - 1, null));
+				expr.iter(captureVariable.bind(_, step, nestLevel - 1));
 			}
 		}
-		body.iter(captureVariable.bind(_, null, 0, null));
+		body.iter(captureVariable.bind(_, null, 0));
 		body.iter((expr) -> {
 			submitStep(expr, 0);
 			switch (expr.expr) {
@@ -304,7 +353,7 @@ class Coroutine {
 		});
 
 		for (i in 0...steps.length) {
-			steps[i].expr.iter(captureVariable.bind(_, steps[i], 1, null));
+			steps[i].expr.iter(captureVariable.bind(_, steps[i], 1));
 		}
 
 		for (i in 0...steps.length) {
@@ -356,7 +405,10 @@ class Coroutine {
 		}
 		postSwitchExprs.push(macro $_this.coordinator = () -> $coordinatorExpr);
 		postSwitchExprs.push(macro $_this.instructionCount = $v{coordinatorCases.length});
-
+		coordinatorCases.push({
+			values: [macro $v{RESET_VARIABLES_INSTRUCTION}],
+			expr: macro $b{[for (cv in capturedVariables) if (cv.resetExpr != null) cv.resetExpr]}
+		});
 		return macro @:privateAccess $b{[for (v in capturedVariables) if (v.expr != null) v.expr].concat(preSwitchExprs).concat(postSwitchExprs)};
 	}
 }
