@@ -3,6 +3,7 @@ package vault.behavior;
 import haxe.macro.Type.TypedExpr;
 import haxe.macro.Context;
 import haxe.macro.Expr;
+import haxe.macro.Expr.ExprOf;
 import haxe.macro.Expr.MetadataEntry;
 
 using StringTools;
@@ -35,14 +36,11 @@ enum abstract QueueVariableSignature(Int) from Int to Int {
 	var Object;
 }
 
+@:using(vault.behavior.Coroutine.CoroutineMacro)
 class Coroutine {
-	static final RESET_VARIABLES_INSTRUCTION = 7777;
-	static final MAX_QUEUE_PRIMITIVES = 10;
-	static final PRIMITIVE_ALIGNMENT = 8;
-
 	var coordinator:() -> Void;
 	var labelledInstructions:Map<String, Int> = [];
-	var primitvieQueue:haxe.io.Bytes = haxe.io.Bytes.alloc(MAX_QUEUE_PRIMITIVES * PRIMITIVE_ALIGNMENT);
+	var primitvieQueue:haxe.io.Bytes = haxe.io.Bytes.alloc(CoroutineMacro.MAX_QUEUE_PRIMITIVES * CoroutineMacro.PRIMITIVE_ALIGNMENT);
 	var queueSignature:Int;
 
 	public var running(default, null):Bool;
@@ -94,7 +92,7 @@ class Coroutine {
 	public inline function resetVariables():Bool {
 		if (coordinator != null) {
 			var oldInstruction = currentInstruction;
-			currentInstruction = RESET_VARIABLES_INSTRUCTION;
+			currentInstruction = CoroutineMacro.RESET_VARIABLES_INSTRUCTION;
 			coordinator();
 			currentInstruction = oldInstruction;
 			return true;
@@ -105,8 +103,14 @@ class Coroutine {
 	public inline function incoming():Bool {
 		return queueSignature > 0;
 	}
+}
 
-	public macro function validate(_this:Expr, ...args:Expr):Expr {
+private class CoroutineMacro {
+	public static final RESET_VARIABLES_INSTRUCTION = 7777;
+	public static final MAX_QUEUE_PRIMITIVES = 10;
+	public static final PRIMITIVE_ALIGNMENT = 8;
+
+	public static macro function validate(coroutine:ExprOf<Coroutine>, ...args:Expr):Expr {
 		var index = 0;
 		var signature = 0;
 		var exprs:Array<Expr> = [];
@@ -126,10 +130,10 @@ class Coroutine {
 					Context.error("This type is not supported " + type, arg.pos);
 			}
 		}
-		return macro $v{signature} == @:privateAccess $_this.queueSignature;
+		return macro $v{signature} == @:privateAccess $coroutine.queueSignature;
 	}
 
-	public macro function accept(_this:Expr, ...args:Expr) {
+	public static macro function accept(coroutine:ExprOf<Coroutine>, ...args:Expr) {
 		if (args.length > 10) {
 			Context.error("Can't accept more than 10 arguments", Context.currentPos());
 		}
@@ -151,25 +155,25 @@ class Coroutine {
 			}
 			switch (type) {
 				case TAbstract(_.get() => t, params) if (t.name == "Int"):
-					exprs.push(macro $arg = $_this.primitvieQueue.getInt32($v{index * PRIMITIVE_ALIGNMENT}));
+					exprs.push(macro $arg = $coroutine.primitvieQueue.getInt32($v{index * PRIMITIVE_ALIGNMENT}));
 					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Int << index * PRIMITIVE_ALIGNMENT);
 				case TAbstract(_.get() => t, params) if (t.name == "Float"):
-					exprs.push(macro $arg = $_this.primitvieQueue.getDouble($v{index * PRIMITIVE_ALIGNMENT}));
+					exprs.push(macro $arg = $coroutine.primitvieQueue.getDouble($v{index * PRIMITIVE_ALIGNMENT}));
 					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Float << index * PRIMITIVE_ALIGNMENT);
 					index++;
 				case TAbstract(_.get() => t, params) if (t.name == "Bool"):
-					exprs.push(macro $arg = $_this.primitvieQueue.get($v{index * PRIMITIVE_ALIGNMENT}) > 0);
+					exprs.push(macro $arg = $coroutine.primitvieQueue.get($v{index * PRIMITIVE_ALIGNMENT}) > 0);
 					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Bool << index * PRIMITIVE_ALIGNMENT);
 					index++;
 				default:
 					Context.error("This type is not supported", arg.pos);
 			}
 		}
-		exprs.push(macro @:privateAccess $_this.queueSignature = 0);
+		exprs.push(macro @:privateAccess $coroutine.queueSignature = 0);
 		return macro @:privateAccess $b{exprs};
 	}
 
-	public macro function send(_this:Expr, ...args:Expr) {
+	public static macro function send(coroutine:ExprOf<Coroutine>, ...args:Expr) {
 		if (args.length > 10) {
 			Context.error("Can't accept more than 10 arguments", Context.currentPos());
 		}
@@ -179,26 +183,26 @@ class Coroutine {
 		for (arg in args) {
 			switch (Context.typeof(arg).followWithAbstracts()) {
 				case TAbstract(_.get() => t, params) if (t.name == "Int"):
-					exprs.push(macro $_this.primitvieQueue.setInt32($v{index * PRIMITIVE_ALIGNMENT}, $arg));
+					exprs.push(macro $coroutine.primitvieQueue.setInt32($v{index * PRIMITIVE_ALIGNMENT}, $arg));
 					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Int << index * PRIMITIVE_ALIGNMENT);
 					index++;
 				case TAbstract(_.get() => t, params) if (t.name == "Float"):
-					exprs.push(macro $_this.primitvieQueue.setDouble($v{index * PRIMITIVE_ALIGNMENT}, $arg));
+					exprs.push(macro $coroutine.primitvieQueue.setDouble($v{index * PRIMITIVE_ALIGNMENT}, $arg));
 					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Float << index * PRIMITIVE_ALIGNMENT);
 					index++;
 				case TAbstract(_.get() => t, params) if (t.name == "Bool"):
-					exprs.push(macro $_this.primitvieQueue.set($v{index * PRIMITIVE_ALIGNMENT}, $arg ? 1 : 0));
+					exprs.push(macro $coroutine.primitvieQueue.set($v{index * PRIMITIVE_ALIGNMENT}, $arg ? 1 : 0));
 					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Bool << index * PRIMITIVE_ALIGNMENT);
 					index++;
 				default:
 					Context.error("This type is not supported", arg.pos);
 			}
 		}
-		exprs.push(macro @:privateAccess $_this.queueSignature = $v{signature});
+		exprs.push(macro @:privateAccess $coroutine.queueSignature = $v{signature});
 		return macro @:privateAccess $b{exprs};
 	}
 
-	public macro function set(_this:Expr, body:Expr):Expr {
+	public static macro function set(coroutine:ExprOf<Coroutine>, body:Expr):Expr {
 		var steps:Array<Step> = [];
 		var capturedVariables:Array<CapturedVariable> = [];
 		var preSwitchExprs:Array<Expr> = [];
@@ -206,7 +210,7 @@ class Coroutine {
 		var coordinatorExpr:Expr = macro {};
 		var coordinatorCases:Array<Case> = [];
 		var labels:Map<String, Step> = [];
-		coordinatorExpr.expr = ESwitch(macro $_this.currentInstruction, coordinatorCases, null);
+		coordinatorExpr.expr = ESwitch(macro $coroutine.currentInstruction, coordinatorCases, null);
 
 		function unrollMeta(expr:Expr) {
 			return switch (expr.expr) {
@@ -257,7 +261,7 @@ class Coroutine {
 				case EReturn(e):
 					if (e == null) {
 						macro {
-							$_this.stop();
+							$coroutine.stop();
 							return;
 						};
 					} else {
@@ -265,7 +269,7 @@ class Coroutine {
 						switch (type) {
 							case TAbstract(_.get() => t, params) if (t.name == "Int"):
 								macro {
-									$_this.step($e);
+									$coroutine.step($e);
 									return;
 								};
 							case TInst(_.get() => t, params) if (t.name == "String"):
@@ -275,7 +279,7 @@ class Coroutine {
 									return expr;
 								}
 								macro {
-									$_this.jump($e);
+									$coroutine.jump($e);
 									return;
 								};
 							default:
@@ -525,14 +529,14 @@ class Coroutine {
 			steps[i].isolatedExpr = steps[i].isolatedExpr.map(load.bind(_, steps[i]));
 		}
 
-		preSwitchExprs.push(macro $_this.labelledInstructions.clear());
+		preSwitchExprs.push(macro $coroutine.labelledInstructions.clear());
 		for (i in 0...steps.length) {
 			if (i == steps.length - 1) {
 				coordinatorCases.push({
 					values: [macro $v{i}],
 					expr: macro {
 						@:noPrivateAccess ${steps[i].isolatedExpr};
-						$_this.stop();
+						$coroutine.stop();
 					}
 				});
 			} else {
@@ -540,16 +544,16 @@ class Coroutine {
 					values: [macro $v{i}],
 					expr: macro {
 						@:noPrivateAccess ${steps[i].isolatedExpr};
-						$_this.step(1);
+						$coroutine.step(1);
 					}
 				});
 			}
 			if (steps[i].label != null) {
-				postSwitchExprs.push(macro $_this.labelledInstructions.set($v{steps[i].label}, $v{i}));
+				postSwitchExprs.push(macro $coroutine.labelledInstructions.set($v{steps[i].label}, $v{i}));
 			}
 		}
-		postSwitchExprs.push(macro $_this.coordinator = () -> $coordinatorExpr);
-		postSwitchExprs.push(macro $_this.instructionCount = $v{coordinatorCases.length});
+		postSwitchExprs.push(macro $coroutine.coordinator = () -> $coordinatorExpr);
+		postSwitchExprs.push(macro $coroutine.instructionCount = $v{coordinatorCases.length});
 		coordinatorCases.push({
 			values: [macro $v{RESET_VARIABLES_INSTRUCTION}],
 			expr: macro $b{[for (cv in capturedVariables) if (cv.resetExpr != null) cv.resetExpr]}
