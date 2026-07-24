@@ -37,10 +37,12 @@ enum abstract QueueVariableSignature(Int) from Int to Int {
 
 class Coroutine {
 	static final RESET_VARIABLES_INSTRUCTION = 7777;
+	static final MAX_QUEUE_PRIMITIVES = 10;
+	static final PRIMITIVE_ALIGNMENT = 8;
 
 	var coordinator:() -> Void;
 	var labelledInstructions:Map<String, Int> = [];
-	var primitvieQueue:haxe.io.Bytes = haxe.io.Bytes.alloc(80);
+	var primitvieQueue:haxe.io.Bytes = haxe.io.Bytes.alloc(MAX_QUEUE_PRIMITIVES * PRIMITIVE_ALIGNMENT);
 	var queueSignature:Int;
 
 	public var running(default, null):Bool;
@@ -100,10 +102,31 @@ class Coroutine {
 		return false;
 	}
 
-	inline function validateSignature(signature:Int) {
-		if (signature != queueSignature) {
-			throw "Signature mismatch: " + queueSignature + ". Expected signature: " + signature;
+	public inline function incoming():Bool {
+		return queueSignature > 0;
+	}
+
+	public macro function validate(_this:Expr, ...args:Expr):Expr {
+		var index = 0;
+		var signature = 0;
+		var exprs:Array<Expr> = [];
+		for (arg in args) {
+			var type = Context.typeof(arg);
+			switch (type.toString()) {
+				case "Abstract<Int>":
+					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Int << index * PRIMITIVE_ALIGNMENT);
+					index++;
+				case "Abstract<Float>":
+					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Float << index * PRIMITIVE_ALIGNMENT);
+					index++;
+				case "Abstract<Bool>":
+					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Bool << index * PRIMITIVE_ALIGNMENT);
+					index++;
+				default:
+					Context.error("This type is not supported " + type, arg.pos);
+			}
 		}
+		return macro $v{signature} == @:privateAccess $_this.queueSignature;
 	}
 
 	public macro function accept(_this:Expr, ...args:Expr) {
@@ -111,7 +134,6 @@ class Coroutine {
 			Context.error("Can't accept more than 10 arguments", Context.currentPos());
 		}
 		var index = 0;
-		var pos = 0;
 		var signature = 0;
 		var exprs:Array<Expr> = [];
 		for (arg in args) {
@@ -129,25 +151,21 @@ class Coroutine {
 			}
 			switch (type) {
 				case TAbstract(_.get() => t, params) if (t.name == "Int"):
-					exprs.push(macro $arg = $_this.primitvieQueue.getInt32($v{pos}));
-					signature = (signature & ~(0x8 << index * 8)) | (QueueVariableSignature.Int << index * 8);
-					pos += 4;
-					index++;
+					exprs.push(macro $arg = $_this.primitvieQueue.getInt32($v{index * PRIMITIVE_ALIGNMENT}));
+					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Int << index * PRIMITIVE_ALIGNMENT);
 				case TAbstract(_.get() => t, params) if (t.name == "Float"):
-					exprs.push(macro $arg = $_this.primitvieQueue.getDouble($v{pos}));
-					signature = (signature & ~(0x8 << index * 8)) | (QueueVariableSignature.Float << index * 8);
-					pos += 8;
+					exprs.push(macro $arg = $_this.primitvieQueue.getDouble($v{index * PRIMITIVE_ALIGNMENT}));
+					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Float << index * PRIMITIVE_ALIGNMENT);
 					index++;
 				case TAbstract(_.get() => t, params) if (t.name == "Bool"):
-					exprs.push(macro $arg = $_this.primitvieQueue.get($v{pos}) > 0);
-					signature = (signature & ~(0x8 << index * 8)) | (QueueVariableSignature.Bool << index * 8);
-					pos += 1;
+					exprs.push(macro $arg = $_this.primitvieQueue.get($v{index * PRIMITIVE_ALIGNMENT}) > 0);
+					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Bool << index * PRIMITIVE_ALIGNMENT);
 					index++;
 				default:
 					Context.error("This type is not supported", arg.pos);
 			}
 		}
-		exprs.insert(0, macro $_this.validateSignature($v{signature}));
+		exprs.push(macro @:privateAccess $_this.queueSignature = 0);
 		return macro @:privateAccess $b{exprs};
 	}
 
@@ -156,30 +174,27 @@ class Coroutine {
 			Context.error("Can't accept more than 10 arguments", Context.currentPos());
 		}
 		var index = 0;
-		var pos = 0;
+		var signature = 0;
 		var exprs:Array<Expr> = [];
-		exprs.push(macro $_this.queueSignature = 0);
 		for (arg in args) {
 			switch (Context.typeof(arg).followWithAbstracts()) {
 				case TAbstract(_.get() => t, params) if (t.name == "Int"):
-					exprs.push(macro $_this.primitvieQueue.setInt32($v{pos}, $arg));
-					exprs.push(macro $_this.queueSignature = ($_this.queueSignature & ~(0x8 << $v{index * 8})) | ($v{QueueVariableSignature.Int} << $v{index * 8}));
-					pos += 4;
+					exprs.push(macro $_this.primitvieQueue.setInt32($v{index * PRIMITIVE_ALIGNMENT}, $arg));
+					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Int << index * PRIMITIVE_ALIGNMENT);
 					index++;
 				case TAbstract(_.get() => t, params) if (t.name == "Float"):
-					exprs.push(macro $_this.primitvieQueue.setDouble($v{pos}, $arg));
-					exprs.push(macro $_this.queueSignature = ($_this.queueSignature & ~(0x8 << $v{index * 8})) | ($v{QueueVariableSignature.Float} << $v{index * 8}));
-					pos += 8;
+					exprs.push(macro $_this.primitvieQueue.setDouble($v{index * PRIMITIVE_ALIGNMENT}, $arg));
+					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Float << index * PRIMITIVE_ALIGNMENT);
 					index++;
 				case TAbstract(_.get() => t, params) if (t.name == "Bool"):
-					exprs.push(macro $_this.primitvieQueue.set($v{pos}, $arg ? 1 : 0));
-					exprs.push(macro $_this.queueSignature = ($_this.queueSignature & ~(0x8 << $v{index * 8})) | ($v{QueueVariableSignature.Bool} << $v{index * 8}));
-					pos += 1;
+					exprs.push(macro $_this.primitvieQueue.set($v{index * PRIMITIVE_ALIGNMENT}, $arg ? 1 : 0));
+					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Bool << index * PRIMITIVE_ALIGNMENT);
 					index++;
 				default:
 					Context.error("This type is not supported", arg.pos);
 			}
 		}
+		exprs.push(macro @:privateAccess $_this.queueSignature = $v{signature});
 		return macro @:privateAccess $b{exprs};
 	}
 
