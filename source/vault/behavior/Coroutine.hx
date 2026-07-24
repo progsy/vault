@@ -153,7 +153,7 @@ class Coroutine {
 		function load(expr:Expr, step:Step) {
 			switch (expr.expr) {
 				case EMeta(s, e) if (s.name == ":load"):
-					switch (e.map(unrollMeta).expr) {
+					switch (unrollMeta(e).expr) {
 						case EVars(vars):
 							for (i in 0...vars.length) {
 								var v = vars[i];
@@ -210,6 +210,7 @@ class Coroutine {
 									}
 								}
 								Context.error("Couldn't load the variable: " + v.name, expr.pos);
+								return expr;
 							}
 						default:
 					}
@@ -277,11 +278,14 @@ class Coroutine {
 								}
 							}
 							if (loded) {
-								var initExpr = vars[i].expr;
 								var mangledName = '${vars[i].name}_${step.branch}_${step.depth}_${step.index}';
 								var type = null;
-								if (initExpr != null) {
-									type = Context.typeof(initExpr).toComplexType();
+								trace('${vars[i].name} ${vars[i].expr}');
+								if (vars[i].expr != null) {
+									type = Context.typeof(vars[i].expr).toComplexType();
+								} else {
+									Context.error("Variable " + vars[i].name + " initial expression must be set", expr.pos);
+									return;
 								}
 								if (type == null && vars[i].type != null) {
 									type = vars[i].type;
@@ -302,7 +306,7 @@ class Coroutine {
 								var capturedVariable = {
 									name: vars[i].name,
 									mangledName: mangledName,
-									expr: initExpr != null ? (macro var $mangledName = $initExpr) : (macro var $mangledName:$type),
+									expr: vars[i].expr != null ? (macro var $mangledName = ${vars[i].expr}) : (macro var $mangledName:$type),
 									resetExpr: resetExpr != null ? macro $i{mangledName} = $resetExpr : resetMethodExpr != null ? macro $p{[mangledName, resetFunctionName]}($a{resetFunctionArguments}) : macro $i{mangledName} = ${vars[i].expr},
 									scope: {
 										branch: step.branch,
