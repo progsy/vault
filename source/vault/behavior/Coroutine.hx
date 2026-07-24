@@ -28,11 +28,20 @@ typedef CapturedVariable = {
 	?scope:{branch:Int, depth:Int, index:Int}
 };
 
+enum abstract QueueVariableSignature(Int) from Int to Int {
+	var Int = 1;
+	var Float;
+	var Bool;
+	var Object;
+}
+
 class Coroutine {
 	static final RESET_VARIABLES_INSTRUCTION = 7777;
 
 	var coordinator:() -> Void;
 	var labelledInstructions:Map<String, Int> = [];
+	var primitvieQueue:haxe.io.Bytes = haxe.io.Bytes.alloc(80);
+	var queueSignature:Int;
 	var stepped:Bool;
 
 	public var running(default, null):Bool;
@@ -97,6 +106,89 @@ class Coroutine {
 			return true;
 		}
 		return false;
+	}
+
+	inline function validateSignature(signature:Int) {
+		if (signature != queueSignature) {
+			throw "Signature mismatch: " + queueSignature + ". Expected signature: " + signature;
+		}
+	}
+
+	public macro function accept(_this:Expr, ...args:Expr) {
+		if (args.length > 10) {
+			Context.error("Can't accept more than 10 arguments", Context.currentPos());
+		}
+		var index = 0;
+		var pos = 0;
+		var signature = 0;
+		var exprs:Array<Expr> = [];
+		for (arg in args) {
+			var type = switch (arg.expr) {
+				case EConst(c):
+					switch (c) {
+						case CIdent(s):
+							Context.typeof(arg);
+						default:
+							Context.error("Argument must be a variable identifier", arg.pos);
+							return macro {};
+					}
+				default:
+					Context.typeof(arg);
+			}
+			switch (type) {
+				case TAbstract(_.get() => t, params) if (t.name == "Int"):
+					exprs.push(macro $arg = $_this.primitvieQueue.getInt32($v{pos}));
+					signature = (signature & ~(0x8 << index * 8)) | (QueueVariableSignature.Int << index * 8);
+					pos += 4;
+					index++;
+				case TAbstract(_.get() => t, params) if (t.name == "Float"):
+					exprs.push(macro $arg = $_this.primitvieQueue.getDouble($v{pos}));
+					signature = (signature & ~(0x8 << index * 8)) | (QueueVariableSignature.Float << index * 8);
+					pos += 8;
+					index++;
+				case TAbstract(_.get() => t, params) if (t.name == "Bool"):
+					exprs.push(macro $arg = $_this.primitvieQueue.get($v{pos}) > 0);
+					signature = (signature & ~(0x8 << index * 8)) | (QueueVariableSignature.Bool << index * 8);
+					pos += 1;
+					index++;
+				default:
+					Context.error("This type is not supported", arg.pos);
+			}
+		}
+		exprs.insert(0, macro $_this.validateSignature($v{signature}));
+		return macro @:privateAccess $b{exprs};
+	}
+
+	public macro function send(_this:Expr, ...args:Expr) {
+		if (args.length > 10) {
+			Context.error("Can't accept more than 10 arguments", Context.currentPos());
+		}
+		var index = 0;
+		var pos = 0;
+		var exprs:Array<Expr> = [];
+		exprs.push(macro $_this.queueSignature = 0);
+		for (arg in args) {
+			switch (Context.typeof(arg).followWithAbstracts()) {
+				case TAbstract(_.get() => t, params) if (t.name == "Int"):
+					exprs.push(macro $_this.primitvieQueue.setInt32($v{pos}, $arg));
+					exprs.push(macro $_this.queueSignature = ($_this.queueSignature & ~(0x8 << $v{index * 8})) | ($v{QueueVariableSignature.Int} << $v{index * 8}));
+					pos += 4;
+					index++;
+				case TAbstract(_.get() => t, params) if (t.name == "Float"):
+					exprs.push(macro $_this.primitvieQueue.setDouble($v{pos}, $arg));
+					exprs.push(macro $_this.queueSignature = ($_this.queueSignature & ~(0x8 << $v{index * 8})) | ($v{QueueVariableSignature.Float} << $v{index * 8}));
+					pos += 8;
+					index++;
+				case TAbstract(_.get() => t, params) if (t.name == "Bool"):
+					exprs.push(macro $_this.primitvieQueue.set($v{pos}, $arg ? 1 : 0));
+					exprs.push(macro $_this.queueSignature = ($_this.queueSignature & ~(0x8 << $v{index * 8})) | ($v{QueueVariableSignature.Bool} << $v{index * 8}));
+					pos += 1;
+					index++;
+				default:
+					Context.error("This type is not supported", arg.pos);
+			}
+		}
+		return macro @:privateAccess $b{exprs};
 	}
 
 	public macro function set(_this:Expr, body:Expr):Expr {
@@ -209,7 +301,7 @@ class Coroutine {
 										return macro {};
 									}
 								}
-								Context.error("Couldn't load the variable: " + v.name, expr.pos);
+								Context.error("Couldn't load the variable " + v.name, expr.pos);
 								return expr;
 							}
 						default:
