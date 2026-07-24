@@ -42,7 +42,6 @@ class Coroutine {
 	var labelledInstructions:Map<String, Int> = [];
 	var primitvieQueue:haxe.io.Bytes = haxe.io.Bytes.alloc(80);
 	var queueSignature:Int;
-	var stepped:Bool;
 
 	public var running(default, null):Bool;
 	public var currentInstruction(default, null):Int;
@@ -62,7 +61,6 @@ class Coroutine {
 
 	public inline function resume():Bool {
 		if (running && currentInstruction >= 0 && currentInstruction < instructionCount && coordinator != null) {
-			stepped = false;
 			coordinator();
 			return true;
 		}
@@ -73,7 +71,6 @@ class Coroutine {
 		var index = labelledInstructions.get(step);
 		if (index != null) {
 			currentInstruction = index;
-			stepped = true;
 			return true;
 		}
 		return false;
@@ -81,11 +78,6 @@ class Coroutine {
 
 	public inline function step(steps:Int = 1):Void {
 		currentInstruction += steps;
-		stepped = true;
-	}
-
-	public inline function stick():Void {
-		stepped = true;
 	}
 
 	public inline function stop():Void {
@@ -198,6 +190,7 @@ class Coroutine {
 		var postSwitchExprs:Array<Expr> = [];
 		var coordinatorExpr:Expr = macro {};
 		var coordinatorCases:Array<Case> = [];
+		var labels:Map<String, Step> = [];
 		coordinatorExpr.expr = ESwitch(macro $_this.currentInstruction, coordinatorCases, null);
 
 		function unrollMeta(expr:Expr) {
@@ -239,6 +232,43 @@ class Coroutine {
 					macro {};
 				default:
 					expr.map(isolateExpr);
+			}
+		}
+
+		function handleReturn(expr:Expr) {
+			return switch (expr.expr) {
+				case EFunction(kind, f):
+					expr;
+				case EReturn(e):
+					if (e == null) {
+						macro {
+							$_this.stop();
+							return;
+						};
+					} else {
+						var type = Context.typeof(e).followWithAbstracts();
+						switch (type) {
+							case TAbstract(_.get() => t, params) if (t.name == "Int"):
+								macro {
+									$_this.step($e);
+									return;
+								};
+							case TInst(_.get() => t, params) if (t.name == "String"):
+								var label:String = e.getValue();
+								if (!labels.exists(label)) {
+									Context.error("Label " + label + " does not exist", e.pos);
+									return expr;
+								}
+								macro {
+									$_this.jump($e);
+									return;
+								};
+							default:
+								Context.error("Returned value must be an increment or a step label", e.pos);
+						}
+					}
+				default:
+					expr.map(handleReturn);
 			}
 		}
 
@@ -324,6 +354,10 @@ class Coroutine {
 					if (s.params != null) {
 						if (s.params.length > 0) {
 							label = s.params[0].getValue();
+							if (labels.exists(label)) {
+								Context.error("Label " + label + " is already taken", s.params[0].pos);
+								return;
+							}
 						}
 					}
 					var step = {
@@ -337,6 +371,9 @@ class Coroutine {
 					};
 					stackIndex.get(nextBranch).set(actualDepth, index + 1);
 					steps.push(step);
+					if (label != null) {
+						labels.set(label, step);
+					}
 				default:
 			}
 			expr.iter(submitStep.bind(_, ++depth));
@@ -372,7 +409,6 @@ class Coroutine {
 							if (loded) {
 								var mangledName = '${vars[i].name}_${step.branch}_${step.depth}_${step.index}';
 								var type = null;
-								trace('${vars[i].name} ${vars[i].expr}');
 								if (vars[i].expr != null) {
 									type = Context.typeof(vars[i].expr).toComplexType();
 								} else {
@@ -470,17 +506,17 @@ class Coroutine {
 		}
 		for (i in 0...steps.length) {
 			steps[i].isolatedExpr = steps[i].expr.map(isolateExpr);
+			steps[i].isolatedExpr = steps[i].isolatedExpr.map(handleReturn);
 			steps[i].isolatedExpr = steps[i].isolatedExpr.map(load.bind(_, steps[i]));
 		}
 
 		preSwitchExprs.push(macro $_this.labelledInstructions.clear());
 		for (i in 0...steps.length) {
-			var step = steps[i];
 			if (i == steps.length - 1) {
 				coordinatorCases.push({
 					values: [macro $v{i}],
 					expr: macro {
-						@:noPrivateAccess ${step.isolatedExpr};
+						@:noPrivateAccess ${steps[i].isolatedExpr};
 						$_this.stop();
 					}
 				});
@@ -488,15 +524,13 @@ class Coroutine {
 				coordinatorCases.push({
 					values: [macro $v{i}],
 					expr: macro {
-						@:noPrivateAccess ${step.isolatedExpr};
-						if (!$_this.stepped) {
-							$_this.step(1);
-						}
+						@:noPrivateAccess ${steps[i].isolatedExpr};
+						$_this.step(1);
 					}
 				});
 			}
-			if (step.label != null) {
-				postSwitchExprs.push(macro $_this.labelledInstructions.set($v{step.label}, $v{i}));
+			if (steps[i].label != null) {
+				postSwitchExprs.push(macro $_this.labelledInstructions.set($v{steps[i].label}, $v{i}));
 			}
 		}
 		postSwitchExprs.push(macro $_this.coordinator = () -> $coordinatorExpr);
