@@ -40,7 +40,10 @@ enum abstract QueueVariableSignature(Int) from Int to Int {
 class Coroutine {
 	var coordinator:() -> Void;
 	var labelledInstructions:Map<String, Int> = [];
-	var primitvieQueue:haxe.io.Bytes = haxe.io.Bytes.alloc(CoroutineMacro.MAX_QUEUE_PRIMITIVES * CoroutineMacro.PRIMITIVE_ALIGNMENT);
+	var primitvieQueue:haxe.io.Bytes = haxe.io.Bytes.alloc(CoroutineMacro.MAX_QUEUE_PRIMITIVES * CoroutineMacro.SIGNATURE_ALIGNMENT);
+	var objectQueue:haxe.ds.Vector<Any> = new haxe.ds.Vector<Any>(CoroutineMacro.MAX_QUEUE_OBJECTS);
+	var incomingPrimitives:Int;
+	var incomingObjects:Int;
 	var queueSignature:Int;
 
 	public var running(default, null):Bool;
@@ -100,34 +103,51 @@ class Coroutine {
 		return false;
 	}
 
-	public inline function incoming():Bool {
-		return queueSignature > 0;
+	public inline function incoming():Int {
+		return incomingPrimitives + incomingObjects;
+	}
+
+	public inline function cancelIncoming():Void {
+		if (incomingPrimitives > 0) {
+			primitvieQueue.fill(0, incomingPrimitives * CoroutineMacro.SIGNATURE_ALIGNMENT, 0);
+		}
+		for (i in 0...incomingObjects) {
+			objectQueue[i] = null;
+		}
+		incomingPrimitives = 0;
+		incomingObjects = 0;
 	}
 }
 
 private class CoroutineMacro {
 	public static final RESET_VARIABLES_INSTRUCTION = 7777;
 	public static final MAX_QUEUE_PRIMITIVES = 10;
-	public static final PRIMITIVE_ALIGNMENT = 8;
+	public static final MAX_QUEUE_OBJECTS = 10;
+	public static final SIGNATURE_ALIGNMENT = 8;
 
 	public static macro function validate(coroutine:ExprOf<Coroutine>, ...args:Expr):Expr {
-		var index = 0;
+		var primitiveIndex = 0;
+		var objectIndex = 0;
 		var signature = 0;
-		var exprs:Array<Expr> = [];
 		for (arg in args) {
-			var type = Context.typeof(arg);
-			switch (type.toString()) {
-				case "Abstract<Int>":
-					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Int << index * PRIMITIVE_ALIGNMENT);
-					index++;
-				case "Abstract<Float>":
-					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Float << index * PRIMITIVE_ALIGNMENT);
-					index++;
-				case "Abstract<Bool>":
-					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Bool << index * PRIMITIVE_ALIGNMENT);
-					index++;
+			switch (Context.typeof(arg)) {
+				case TType(_.get() => t, params) if (t.name == "Abstract<Int>"):
+					signature = (signature & ~(SIGNATURE_ALIGNMENT << primitiveIndex * SIGNATURE_ALIGNMENT)) | (QueueVariableSignature.Int << primitiveIndex * SIGNATURE_ALIGNMENT);
+					primitiveIndex++;
+				case TType(_.get() => t, params) if (t.name == "Abstract<Float>"):
+					signature = (signature & ~(SIGNATURE_ALIGNMENT << primitiveIndex * SIGNATURE_ALIGNMENT)) | (QueueVariableSignature.Float << primitiveIndex * SIGNATURE_ALIGNMENT);
+					primitiveIndex++;
+				case TType(_.get() => t, params) if (t.name == "Abstract<Bool>"):
+					signature = (signature & ~(SIGNATURE_ALIGNMENT << primitiveIndex * SIGNATURE_ALIGNMENT)) | (QueueVariableSignature.Bool << primitiveIndex * SIGNATURE_ALIGNMENT);
+					primitiveIndex++;
+				case TType(_.get() => t, _) if (t.name.startsWith("Class") || t.name.startsWith("Enum")):
+					signature = (signature & ~(SIGNATURE_ALIGNMENT << objectIndex * SIGNATURE_ALIGNMENT)) | (QueueVariableSignature.Object << objectIndex * SIGNATURE_ALIGNMENT);
+					objectIndex++;
+				case TAnonymous(_):
+					signature = (signature & ~(SIGNATURE_ALIGNMENT << objectIndex * SIGNATURE_ALIGNMENT)) | (QueueVariableSignature.Object << objectIndex * SIGNATURE_ALIGNMENT);
+					objectIndex++;
 				default:
-					Context.error("This type is not supported " + type, arg.pos);
+					Context.error("This type is not supported", arg.pos);
 			}
 		}
 		return macro $v{signature} == @:privateAccess $coroutine.queueSignature;
@@ -137,8 +157,10 @@ private class CoroutineMacro {
 		if (args.length > 10) {
 			Context.error("Can't accept more than 10 arguments", Context.currentPos());
 		}
-		var index = 0;
+		var primitiveIndex = 0;
+		var objectIndex = 0;
 		var signature = 0;
+		var objectCount = 0;
 		var exprs:Array<Expr> = [];
 		for (arg in args) {
 			var type = switch (arg.expr) {
@@ -153,22 +175,30 @@ private class CoroutineMacro {
 				default:
 					Context.typeof(arg);
 			}
-			switch (type) {
+			switch (type.followWithAbstracts()) {
 				case TAbstract(_.get() => t, params) if (t.name == "Int"):
-					exprs.push(macro $arg = $coroutine.primitvieQueue.getInt32($v{index * PRIMITIVE_ALIGNMENT}));
-					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Int << index * PRIMITIVE_ALIGNMENT);
+					exprs.push(macro $arg = $coroutine.primitvieQueue.getInt32($v{primitiveIndex * SIGNATURE_ALIGNMENT}));
+					signature = (signature & ~(SIGNATURE_ALIGNMENT << primitiveIndex * SIGNATURE_ALIGNMENT)) | (QueueVariableSignature.Int << primitiveIndex * SIGNATURE_ALIGNMENT);
+					primitiveIndex++;
 				case TAbstract(_.get() => t, params) if (t.name == "Float"):
-					exprs.push(macro $arg = $coroutine.primitvieQueue.getDouble($v{index * PRIMITIVE_ALIGNMENT}));
-					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Float << index * PRIMITIVE_ALIGNMENT);
-					index++;
+					exprs.push(macro $arg = $coroutine.primitvieQueue.getDouble($v{primitiveIndex * SIGNATURE_ALIGNMENT}));
+					signature = (signature & ~(SIGNATURE_ALIGNMENT << primitiveIndex * SIGNATURE_ALIGNMENT)) | (QueueVariableSignature.Float << primitiveIndex * SIGNATURE_ALIGNMENT);
+					primitiveIndex++;
 				case TAbstract(_.get() => t, params) if (t.name == "Bool"):
-					exprs.push(macro $arg = $coroutine.primitvieQueue.get($v{index * PRIMITIVE_ALIGNMENT}) > 0);
-					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Bool << index * PRIMITIVE_ALIGNMENT);
-					index++;
+					exprs.push(macro $arg = $coroutine.primitvieQueue.get($v{primitiveIndex * SIGNATURE_ALIGNMENT}) > 0);
+					signature = (signature & ~(SIGNATURE_ALIGNMENT << primitiveIndex * SIGNATURE_ALIGNMENT)) | (QueueVariableSignature.Bool << primitiveIndex * SIGNATURE_ALIGNMENT);
+					primitiveIndex++;
+				case TInst(_, _), TEnum(_, _), TAnonymous(_):
+					exprs.push(macro $arg = $coroutine.objectQueue[$v{objectIndex}]);
+					exprs.push(macro $coroutine.objectQueue[$v{objectIndex}] = null);
+					signature = (signature & ~(SIGNATURE_ALIGNMENT << primitiveIndex * SIGNATURE_ALIGNMENT)) | (QueueVariableSignature.Object << primitiveIndex * SIGNATURE_ALIGNMENT);
+					objectIndex++;
 				default:
 					Context.error("This type is not supported", arg.pos);
 			}
 		}
+		exprs.push(macro @:privateAccess $coroutine.incomingPrimitives = 0);
+		exprs.push(macro @:privateAccess $coroutine.incomingObjects = 0);
 		exprs.push(macro @:privateAccess $coroutine.queueSignature = 0);
 		return macro @:privateAccess $b{exprs};
 	}
@@ -177,27 +207,34 @@ private class CoroutineMacro {
 		if (args.length > 10) {
 			Context.error("Can't accept more than 10 arguments", Context.currentPos());
 		}
-		var index = 0;
+		var primitiveIndex = 0;
+		var objectIndex = 0;
 		var signature = 0;
 		var exprs:Array<Expr> = [];
 		for (arg in args) {
 			switch (Context.typeof(arg).followWithAbstracts()) {
 				case TAbstract(_.get() => t, params) if (t.name == "Int"):
-					exprs.push(macro $coroutine.primitvieQueue.setInt32($v{index * PRIMITIVE_ALIGNMENT}, $arg));
-					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Int << index * PRIMITIVE_ALIGNMENT);
-					index++;
+					exprs.push(macro $coroutine.primitvieQueue.setInt32($v{primitiveIndex * SIGNATURE_ALIGNMENT}, $arg));
+					signature = (signature & ~(SIGNATURE_ALIGNMENT << primitiveIndex * SIGNATURE_ALIGNMENT)) | (QueueVariableSignature.Int << primitiveIndex * SIGNATURE_ALIGNMENT);
+					primitiveIndex++;
 				case TAbstract(_.get() => t, params) if (t.name == "Float"):
-					exprs.push(macro $coroutine.primitvieQueue.setDouble($v{index * PRIMITIVE_ALIGNMENT}, $arg));
-					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Float << index * PRIMITIVE_ALIGNMENT);
-					index++;
+					exprs.push(macro $coroutine.primitvieQueue.setDouble($v{primitiveIndex * SIGNATURE_ALIGNMENT}, $arg));
+					signature = (signature & ~(SIGNATURE_ALIGNMENT << primitiveIndex * SIGNATURE_ALIGNMENT)) | (QueueVariableSignature.Float << primitiveIndex * SIGNATURE_ALIGNMENT);
+					primitiveIndex++;
 				case TAbstract(_.get() => t, params) if (t.name == "Bool"):
-					exprs.push(macro $coroutine.primitvieQueue.set($v{index * PRIMITIVE_ALIGNMENT}, $arg ? 1 : 0));
-					signature = (signature & ~(PRIMITIVE_ALIGNMENT << index * PRIMITIVE_ALIGNMENT)) | (QueueVariableSignature.Bool << index * PRIMITIVE_ALIGNMENT);
-					index++;
+					exprs.push(macro $coroutine.primitvieQueue.set($v{primitiveIndex * SIGNATURE_ALIGNMENT}, $arg ? 1 : 0));
+					signature = (signature & ~(SIGNATURE_ALIGNMENT << primitiveIndex * SIGNATURE_ALIGNMENT)) | (QueueVariableSignature.Bool << primitiveIndex * SIGNATURE_ALIGNMENT);
+					primitiveIndex++;
+				case TInst(_, _), TEnum(_, _), TAnonymous(_):
+					exprs.push(macro $coroutine.objectQueue[$v{objectIndex}] = $arg);
+					signature = (signature & ~(SIGNATURE_ALIGNMENT << objectIndex * SIGNATURE_ALIGNMENT)) | (QueueVariableSignature.Object << objectIndex * SIGNATURE_ALIGNMENT);
+					objectIndex++;
 				default:
 					Context.error("This type is not supported", arg.pos);
 			}
 		}
+		exprs.push(macro @:privateAccess $coroutine.incomingPrimitives = $v{primitiveIndex});
+		exprs.push(macro @:privateAccess $coroutine.incomingObjects = $v{objectIndex});
 		exprs.push(macro @:privateAccess $coroutine.queueSignature = $v{signature});
 		return macro @:privateAccess $b{exprs};
 	}
