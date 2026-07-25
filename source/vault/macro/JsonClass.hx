@@ -168,7 +168,6 @@ class JsonClass {
 
 				var cls = Context.getLocalClass().get();
 				var className = cls.name;
-
 				var reloadAssigns:Array<Expr> = [];
 
 				for (f in fields) {
@@ -182,12 +181,56 @@ class JsonClass {
 				}
 
 				fields.push({
+					name: "SCHEMA_PATH",
+					access: [APublic, AStatic, AFinal],
+					pos: Context.currentPos(),
+					kind: FieldType.FVar(macro :String, macro $v{schemaPath})
+				});
+
+				fields.push({
+					name: "getSchemaPath",
+					access: [APublic, AInline],
+					pos: Context.currentPos(),
+					kind: FFun({
+						args: [],
+						expr: macro return SCHEMA_PATH
+					})
+				});
+
+				fields.push({
 					name: "new",
 					access: [APublic],
 					pos: Context.currentPos(),
 					kind: FFun({
 						args: [],
 						expr: macro {}
+					})
+				});
+
+				fields.push({
+					name: "reset",
+					access: [APublic],
+					pos: Context.currentPos(),
+					kind: FFun({
+						args: [],
+						ret: macro :Void,
+						expr: macro $b{
+							[
+								for (f in fields) {
+									var value:Expr;
+									if (f.access.contains(AStatic)) {
+										continue;
+									}
+									switch (f.kind) {
+										case FVar(_, e):
+											value = e;
+										default:
+											continue;
+									}
+									macro $i{f.name} = $value;
+								}
+							]
+						}
 					})
 				});
 
