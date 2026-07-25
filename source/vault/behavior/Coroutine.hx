@@ -453,6 +453,7 @@ private class CoroutineMacro {
 					captureVariable(e, step, nestLevel);
 					resetMethodExpr = null;
 				case EVars(vars):
+					Context.typeExpr(expr);
 					for (i in 0...vars.length) {
 						if (step != null) {
 							var loded = false;
@@ -515,6 +516,10 @@ private class CoroutineMacro {
 										resetFunctionArguments = params;
 									default:
 								}
+							}
+							if (vars[i].expr == null) {
+								Context.error("Variable " + vars[i].name + " initial expression must be set", expr.pos);
+								return;
 							}
 							capturedVariables.push({
 								name: vars[i].name,
