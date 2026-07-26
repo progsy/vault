@@ -4,7 +4,7 @@ Vault is a game-oriented library which contains a set of essential modules for g
 - vault.behavior.**Signal**: General-purpose event dispatcher that supports variadic type parameters and nesting.
 - vault.behavior.**Schedule**: Sequential executor for tasks/jobs.
 - vault.data.**StructOfArrays** & vault.data.**StructOfVectors**: Alternative cache-friendly containers.
-- vault.macro.**JsonClass**: Allows you to inject class fields from a json file at compile time with optional runtime reloading support.
+- vault.data.**Json**: Statically-typed json type.
 
 ## Installation
 ``haxelib git vault https://github.com/progsy/vault.git``
@@ -127,6 +127,15 @@ We will be generating a number and check if it is even or odd. Send true to proc
 We shall not proceed.
 (Restart)(Tick 3)
 You refused to proceed.
+```
+### Json
+```haxe
+// You can now get LSP completions and fast field access
+var object = new vault.data.Json<"path/to/schema.json">();
+object.speed = 20.5;
+object.acceleration = 0.182;
+// Later if you want to reset the fields to their initial values
+object.reset();
 ```
 
 ## Experimental
