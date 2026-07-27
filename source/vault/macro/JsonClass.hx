@@ -30,20 +30,20 @@ class JsonClass {
 		var cls = Context.getLocalClass().get();
 		var className = cls.name;
 
-		var reloadAssigns:Array<Expr> = [];
-		var reloadStaticAssigns:Array<Expr> = [];
+		var loadAssigns:Array<Expr> = [];
+		var loadStaticAssigns:Array<Expr> = [];
 
 		for (f in fields) {
 			var fieldName = f.name;
 			if (!staticFields) {
-				reloadAssigns.push(macro {
+				loadAssigns.push(macro {
 					var value = Reflect.field(json, $v{fieldName});
 					if (Reflect.hasField(json, $v{fieldName})) {
 						$i{fieldName} = value;
 					}
 				});
 			} else {
-				reloadStaticAssigns.push(macro {
+				loadStaticAssigns.push(macro {
 					var value = Reflect.field(json, $v{fieldName});
 					if (Reflect.hasField(json, $v{fieldName})) {
 						$i{fieldName} = value;
@@ -52,29 +52,29 @@ class JsonClass {
 			}
 		}
 
-		var reloadJsonFunction:haxe.macro.Field;
-		var reloadJsonStaticFunction:haxe.macro.Field;
+		var parseFunction:haxe.macro.Field;
+		var parseStaticFunction:haxe.macro.Field;
 		for (f in buildFields) {
-			if (f.name == "reloadJson") {
-				reloadJsonFunction = f;
-			} else if (f.name == "reloadJsonStatic") {
-				reloadJsonStaticFunction = f;
+			if (f.name == "parse") {
+				parseFunction = f;
+			} else if (f.name == "parseStatic") {
+				parseStaticFunction = f;
 			}
 		}
 
-		if (reloadJsonFunction != null) {
-			switch (reloadJsonFunction.kind) {
+		if (parseFunction != null) {
+			switch (parseFunction.kind) {
 				case FFun(f):
 					switch (f.expr.expr) {
 						case EBlock(exprs):
-							f.expr = macro $b{exprs.concat(reloadAssigns)};
+							f.expr = macro $b{exprs.concat(loadAssigns)};
 						default:
 					}
 				default:
 			};
 		} else {
 			fields.push({
-				name: "reloadJson",
+				name: "parse",
 				access: [APublic],
 				pos: Context.currentPos(),
 				kind: FFun({
@@ -82,25 +82,25 @@ class JsonClass {
 					ret: macro :Void,
 					expr: macro {
 						var json:Dynamic = haxe.Json.parse(content);
-						$b{reloadAssigns};
+						$b{loadAssigns};
 					}
 				})
 			});
 		}
 
-		if (reloadJsonStaticFunction != null) {
-			switch (reloadJsonStaticFunction.kind) {
+		if (parseStaticFunction != null) {
+			switch (parseStaticFunction.kind) {
 				case FFun(f):
 					switch (f.expr.expr) {
 						case EBlock(exprs):
-							f.expr = macro $b{exprs.concat(reloadStaticAssigns)};
+							f.expr = macro $b{exprs.concat(loadStaticAssigns)};
 						default:
 					}
 				default:
 			};
 		} else {
 			fields.push({
-				name: "reloadJsonStatic",
+				name: "parseStatic",
 				access: [APublic, AStatic],
 				pos: Context.currentPos(),
 				kind: FFun({
@@ -108,7 +108,7 @@ class JsonClass {
 					ret: macro :Void,
 					expr: macro {
 						var json:Dynamic = haxe.Json.parse(content);
-						$b{reloadStaticAssigns};
+						$b{loadStaticAssigns};
 					}
 				})
 			});
@@ -168,15 +168,12 @@ class JsonClass {
 
 				var cls = Context.getLocalClass().get();
 				var className = cls.name;
-				var reloadAssigns:Array<Expr> = [];
+				var loadAssigns:Array<Expr> = [];
 
 				for (f in fields) {
 					var fieldName = f.name;
-					reloadAssigns.push(macro {
-						var value = Reflect.field(json, $v{fieldName});
-						if (Reflect.hasField(json, $v{fieldName})) {
-							$i{fieldName} = value;
-						}
+					loadAssigns.push(macro if (Reflect.hasField(json, $v{fieldName})) {
+						$i{fieldName} = Reflect.field(json, $v{fieldName});
 					});
 				}
 
@@ -235,7 +232,7 @@ class JsonClass {
 				});
 
 				fields.push({
-					name: "reload",
+					name: "parse",
 					access: [APublic],
 					pos: Context.currentPos(),
 					kind: FFun({
@@ -243,7 +240,7 @@ class JsonClass {
 						ret: macro :Void,
 						expr: macro {
 							var json:Dynamic = haxe.Json.parse(content);
-							$b{reloadAssigns};
+							$b{loadAssigns};
 						}
 					})
 				});
