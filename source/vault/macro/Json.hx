@@ -36,11 +36,11 @@ class Json {
 				var signature = Context.signature(schemaPaths.join('#'));
 				var uniqueName = 'Json_${signature}';
 				var fullPack = ["vault", "data"];
-
-				var complexType = TPath({
+				var typePath:TypePath = {
 					pack: fullPack,
 					name: uniqueName
-				});
+				};
+				var complexType = TPath(typePath);
 
 				try {
 					var existingPath = fullPack.join(".") + "." + uniqueName;
@@ -105,7 +105,7 @@ class Json {
 
 				fields.push({
 					name: "reset",
-					access: [APublic],
+					access: [APublic, AInline],
 					pos: Context.currentPos(),
 					kind: FFun({
 						args: [],
@@ -132,7 +132,7 @@ class Json {
 
 				fields.push({
 					name: "parse",
-					access: [APublic],
+					access: [APublic, AInline],
 					pos: Context.currentPos(),
 					kind: FFun({
 						args: [{name: "content", type: macro :String}],
@@ -141,6 +141,33 @@ class Json {
 							var json:Dynamic = haxe.Json.parse(content);
 							$b{loadAssigns};
 						}
+					})
+				});
+
+				var copyExprs = [
+					for (f in fields) {
+						var value:Expr;
+						if (f.access.contains(AStatic)) {
+							continue;
+						}
+						switch (f.kind) {
+							case FVar(_, e):
+								value = e;
+							default:
+								continue;
+						}
+						macro $p{['instance', f.name]} = $i{f.name};
+					}
+				];
+				copyExprs.insert(0, macro var instance = new $typePath());
+				copyExprs.push(macro return instance);
+				fields.push({
+					name: "copy",
+					access: [APublic, AInline],
+					pos: Context.currentPos(),
+					kind: FFun({
+						args: [],
+						expr: macro $b{copyExprs}
 					})
 				});
 
