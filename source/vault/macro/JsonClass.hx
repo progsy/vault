@@ -126,18 +126,21 @@ class JsonClass {
 				if (params.length == 0) {
 					Context.error("Please specify the schema path", Context.currentPos());
 				}
-				var schemaPath:String;
-				switch (params[0]) {
-					case TInst(_.get() => t, _):
-						if (t.name.charAt(0) == 'S') {
-							schemaPath = t.name.substring(1);
-						}
-					default:
+				var schemaPaths:Array<String> = [];
+				for (param in params) {
+					switch (param) {
+						case TInst(_.get() => t, _) if (t.name.charAt(0) == 'S'):
+							var path = t.name.substring(1);
+							if (!sys.FileSystem.exists(path)) {
+								Context.error('Path $path does not exist', t.pos);
+							}
+							schemaPaths.push(t.name.substring(1));
+						default:
+							Context.error("Invalid parameter", Context.currentPos());
+					}
 				}
-				if (!sys.FileSystem.exists(schemaPath)) {
-					Context.error('Path $schemaPath does not exist', Context.currentPos());
-				}
-				var signature = Context.signature(schemaPath);
+
+				var signature = Context.signature(schemaPaths.join('#'));
 				var uniqueName = 'Json_${signature}';
 				var fullPack = ["vault", "behavior"];
 
@@ -152,18 +155,20 @@ class JsonClass {
 					return complexType;
 				} catch (e:Dynamic) {}
 
-				var content = sys.io.File.getContent(schemaPath);
-				var json = haxe.Json.parse(content);
+				for (schemaPath in schemaPaths) {
+					var content = sys.io.File.getContent(schemaPath);
+					var json = haxe.Json.parse(content);
 
-				for (fieldName in Reflect.fields(json)) {
-					var value = Reflect.field(json, fieldName);
-					var kind = FieldType.FVar(null, macro $v{value});
-					fields.push({
-						name: fieldName,
-						access: [APublic],
-						kind: kind,
-						pos: Context.currentPos()
-					});
+					for (fieldName in Reflect.fields(json)) {
+						var value = Reflect.field(json, fieldName);
+						var kind = FieldType.FVar(null, macro $v{value});
+						fields.push({
+							name: fieldName,
+							access: [APublic],
+							kind: kind,
+							pos: Context.currentPos()
+						});
+					}
 				}
 
 				var cls = Context.getLocalClass().get();
@@ -181,7 +186,8 @@ class JsonClass {
 					name: "SCHEMA_PATH",
 					access: [APublic, AStatic, AFinal],
 					pos: Context.currentPos(),
-					kind: FieldType.FVar(macro :String, macro $v{schemaPath})
+					kind: schemaPaths.length == 1 ? FieldType.FVar(macro :String,
+						macro $v{schemaPaths[0]}) : FieldType.FVar(macro :Array<String>, macro $v{schemaPaths})
 				});
 
 				fields.push({
@@ -196,7 +202,7 @@ class JsonClass {
 
 				fields.push({
 					name: "new",
-					access: [APublic],
+					access: [APublic, AInline],
 					pos: Context.currentPos(),
 					kind: FFun({
 						args: [],
