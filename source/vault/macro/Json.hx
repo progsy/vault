@@ -9,115 +9,8 @@ using haxe.macro.ExprTools;
 using haxe.macro.TypeTools;
 using haxe.macro.ComplexTypeTools;
 
-class JsonClass {
-	static function build(filepath:String, staticFields:Bool = true) {
-		var buildFields = Context.getBuildFields();
-		var fields:Array<Field> = [];
-		var content = sys.io.File.getContent(filepath);
-		var json = haxe.Json.parse(content);
-
-		for (fieldName in Reflect.fields(json)) {
-			var value = Reflect.field(json, fieldName);
-			var kind = FieldType.FVar(null, macro $v{value});
-			fields.push({
-				name: fieldName,
-				access: staticFields ? [APublic, AStatic] : [APublic],
-				kind: kind,
-				pos: Context.currentPos()
-			});
-		}
-
-		var cls = Context.getLocalClass().get();
-		var className = cls.name;
-
-		var loadAssigns:Array<Expr> = [];
-		var loadStaticAssigns:Array<Expr> = [];
-
-		for (f in fields) {
-			var fieldName = f.name;
-			if (!staticFields) {
-				loadAssigns.push(macro {
-					var value = Reflect.field(json, $v{fieldName});
-					if (Reflect.hasField(json, $v{fieldName})) {
-						$i{fieldName} = value;
-					}
-				});
-			} else {
-				loadStaticAssigns.push(macro {
-					var value = Reflect.field(json, $v{fieldName});
-					if (Reflect.hasField(json, $v{fieldName})) {
-						$i{fieldName} = value;
-					}
-				});
-			}
-		}
-
-		var parseFunction:haxe.macro.Field;
-		var parseStaticFunction:haxe.macro.Field;
-		for (f in buildFields) {
-			if (f.name == "parse") {
-				parseFunction = f;
-			} else if (f.name == "parseStatic") {
-				parseStaticFunction = f;
-			}
-		}
-
-		if (parseFunction != null) {
-			switch (parseFunction.kind) {
-				case FFun(f):
-					switch (f.expr.expr) {
-						case EBlock(exprs):
-							f.expr = macro $b{exprs.concat(loadAssigns)};
-						default:
-					}
-				default:
-			};
-		} else {
-			fields.push({
-				name: "parse",
-				access: [APublic],
-				pos: Context.currentPos(),
-				kind: FFun({
-					args: [{name: "content", type: macro :String}],
-					ret: macro :Void,
-					expr: macro {
-						var json:Dynamic = haxe.Json.parse(content);
-						$b{loadAssigns};
-					}
-				})
-			});
-		}
-
-		if (parseStaticFunction != null) {
-			switch (parseStaticFunction.kind) {
-				case FFun(f):
-					switch (f.expr.expr) {
-						case EBlock(exprs):
-							f.expr = macro $b{exprs.concat(loadStaticAssigns)};
-						default:
-					}
-				default:
-			};
-		} else {
-			fields.push({
-				name: "parseStatic",
-				access: [APublic, AStatic],
-				pos: Context.currentPos(),
-				kind: FFun({
-					args: [{name: "content", type: macro :String}],
-					ret: macro :Void,
-					expr: macro {
-						var json:Dynamic = haxe.Json.parse(content);
-						$b{loadStaticAssigns};
-					}
-				})
-			});
-		}
-
-		return buildFields.concat(fields);
-	}
-
-	static function buildGeneric():ComplexType {
+class Json {
+	static function build():ComplexType {
 		var type = Context.getLocalType();
 		var fields = Context.getBuildFields();
 
@@ -142,7 +35,7 @@ class JsonClass {
 
 				var signature = Context.signature(schemaPaths.join('#'));
 				var uniqueName = 'Json_${signature}';
-				var fullPack = ["vault", "behavior"];
+				var fullPack = ["vault", "data"];
 
 				var complexType = TPath({
 					pack: fullPack,
