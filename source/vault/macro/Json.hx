@@ -12,7 +12,7 @@ using haxe.macro.ComplexTypeTools;
 class Json {
 	static function build():ComplexType {
 		var type = Context.getLocalType();
-		var fields = Context.getBuildFields();
+		var fields:Array<Field> = [];
 
 		switch (type) {
 			case TInst(_.get() => cl, params):
@@ -81,6 +81,36 @@ class Json {
 					pos: Context.currentPos(),
 					kind: schemaPaths.length == 1 ? FieldType.FVar(macro :String,
 						macro $v{schemaPaths[0]}) : FieldType.FVar(macro :Array<String>, macro $v{schemaPaths})
+				});
+
+				var toStringExprs:Array<Expr> = [];
+				for (i in 0...fields.length) {
+					var f = fields[i];
+					var value:Expr;
+					switch (f.kind) {
+						case FVar(_, e):
+							value = e;
+						default:
+							continue;
+					}
+					if (i == 0) {
+						toStringExprs.push(macro output += '{' + $v{f.name} + ': ' + $i{f.name} + ', ');
+					} else if (i + 1 == fields.length) {
+						toStringExprs.push(macro output += $v{f.name} + ': ' + $i{f.name} + '}');
+					} else {
+						toStringExprs.push(macro output += $v{f.name} + ': ' + $i{f.name} + ', ');
+					}
+				}
+				toStringExprs.insert(0, macro var output = '');
+				toStringExprs.push(macro return output);
+				fields.push({
+					name: "toString",
+					access: [APublic, AInline],
+					pos: Context.currentPos(),
+					kind: FFun({
+						args: [],
+						expr: macro $b{toStringExprs}
+					})
 				});
 
 				fields.push({
@@ -176,7 +206,7 @@ class Json {
 					name: uniqueName,
 					pos: Context.currentPos(),
 					kind: TDClass(),
-					fields: fields
+					fields: fields.concat(Context.getBuildFields())
 				});
 				return complexType;
 			default:
