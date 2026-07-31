@@ -96,9 +96,10 @@ class Pathfinder {
 		}
 
 		path.clear();
+		path.pathfinder = this;
 
 		if (start == end) {
-			path.push(nodes.x[start], nodes.y[start], nodes.z[start], nodes.flags[start], nodes.weight[start]);
+			path.nodes[path.length++] = start;
 			return;
 		}
 
@@ -175,10 +176,8 @@ class Pathfinder {
 
 	inline function backtrack(path:Path, end:Int):Void {
 		var connection = end;
-		while (connection != INVALID_NODE) {
-			if (path.push(nodes.x[connection], nodes.y[connection], nodes.z[connection], nodes.flags[connection], nodes.weight[connection]) == -1) {
-				break;
-			}
+		while (connection != INVALID_NODE && path.length < path.nodes.length) {
+			path.nodes[path.length++] = connection;
 			connection = searchers.parent[connection];
 		}
 	}
