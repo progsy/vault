@@ -19,14 +19,12 @@ class StructOfVectors {
 		switch (type) {
 			case TInst(_.get() => cl, params):
 				var structTypes:Array<Type> = [];
-				var fieldPrefix = "";
-				var secondaryStride = 1;
+				var optionalStructTypes:Array<Type> = [];
 				var fields = Context.getBuildFields();
 				var typeFields:Array<{
 					name:String,
 					sourceName:String,
 					type:ComplexType,
-					secondary:Bool,
 					optional:Bool,
 					ignore:Bool,
 					expr:Expr
@@ -42,52 +40,54 @@ class StructOfVectors {
 				var classTypeParameterDecls:Array<TypeParamDecl> = [];
 				var classTypeParameters:Array<TypeParam> = [];
 
+				var nextOptional = false;
+				var lastExpr = null;
+
+				function checkTypeMeta(expr:Expr) {
+					switch (expr.expr) {
+						case EMeta(s, e):
+							if (s.name == ':optional') {
+								nextOptional = true;
+							}
+							lastExpr = e;
+							e.iter(checkTypeMeta);
+						default:
+					}
+				}
+
 				for (i in 0...params.length) {
-					var param = params[i];
+					var param = params[i].followWithAbstracts();
 					switch (param) {
-						case TAbstract(_.get() => t, params):
-							var structType = param;
-							structTypes.push(structType.followWithAbstracts());
-							uniqueName += "_" + t.pack.join('') + t.name;
-							for (i in 0...t.params.length) {
-								classTypeParameterDecls.push({name: t.params[i].name});
-								classTypeParameters.push(TPType(t.params[i].t.toComplexType()));
-							}
-						case TAnonymous(_.get() => t):
-							var structType = param;
-							structTypes.push(structType);
-							uniqueName += "_" + Std.random(0xFFFFFFF);
-						case TType(_.get() => structDefType, structTypeParams):
-							var structType = param;
-							structTypes.push(structType);
-							uniqueName += "_" + structDefType.pack.join('') + structDefType.name;
 						case TInst(_.get() => structDefType, structTypeParams):
-							var validStructType = true;
-							if (i >= secondaryStride) {
-								if (structDefType.name.charAt(0) == 'S') {
-									fieldPrefix = structDefType.name.substring(1);
-									try {
-										Context.getType(structDefType.name);
-									} catch (e) {
-										validStructType = false;
+							switch (structDefType.kind) {
+								case KExpr(expr):
+									checkTypeMeta(expr);
+									if (lastExpr != null) {
+										Context.typeExpr(lastExpr);
+										var typeName = lastExpr.toString();
+										var structType = Context.getType(typeName).followWithAbstracts();
+										uniqueName += "_" + typeName.replace('.', '');
+										for (i in 0...structDefType.params.length) {
+											classTypeParameterDecls.push({name: structDefType.params[i].name});
+											classTypeParameters.push(TPType(structDefType.params[i].t.toComplexType()));
+										}
+										if (nextOptional) {
+											optionalStructTypes.push(structType);
+										} else {
+											structTypes.push(structType);
+										}
+										nextOptional = false;
 									}
-								} else if (structDefType.name.charAt(0) == 'I') {
-									secondaryStride = Std.parseInt(structDefType.name.substring(1));
-									try {
-										Context.getType(structDefType.name);
-									} catch (e) {
-										validStructType = false;
+									lastExpr = null;
+									params[i] = null;
+								default:
+									var structType = param;
+									structTypes.push(structType);
+									uniqueName += "_" + structDefType.pack.join('') + structDefType.name;
+									for (i in 0...structDefType.params.length) {
+										classTypeParameterDecls.push({name: structDefType.params[i].name});
+										classTypeParameters.push(TPType(structDefType.params[i].t.toComplexType()));
 									}
-								}
-							}
-							if (validStructType) {
-								var structType = param;
-								structTypes.push(structType);
-								uniqueName += "_" + structDefType.pack.join('') + structDefType.name;
-								for (i in 0...structDefType.params.length) {
-									classTypeParameterDecls.push({name: structDefType.params[i].name});
-									classTypeParameters.push(TPType(structDefType.params[i].t.toComplexType()));
-								}
 							}
 						default:
 					}
@@ -103,44 +103,20 @@ class StructOfVectors {
 					var existingPath = fullPack.join(".") + "." + uniqueName;
 					Context.getType(existingPath);
 					return complexType;
-				} catch (e:Dynamic) {}
+				} catch (e) {}
 
-				for (i in 0...structTypes.length) {
-					var structType = structTypes[i];
+				var allStructTypes:Array<Type> = structTypes.concat(optionalStructTypes);
+
+				for (i in 0...allStructTypes.length) {
+					var structType = allStructTypes[i];
 					var structComplexType = structType.toComplexType();
 
 					switch (structType) {
-						case TAnonymous(_.get() => t):
-							for (f in t.fields) {
-								var capitalizeInitialLetter = f.name.charAt(0).toUpperCase();
-								var nameRest = f.name.substring(1);
-								var fieldName = fieldPrefix.length == 0 ? f.name : fieldPrefix + capitalizeInitialLetter + nameRest;
-								var typedExpr = f.expr();
-
-								switch (f.kind) {
-									case FMethod(_):
-										continue;
-									case FVar(read, write) if ((read == AccCall && write == AccCall)
-										|| (read == AccCall && write == AccNever)):
-										continue;
-									default:
-								}
-
-								typeFields.push({
-									name: fieldName,
-									sourceName: f.name,
-									secondary: i >= secondaryStride,
-									optional: f.meta.has(":optional"),
-									ignore: f.meta.has(":ignore"),
-									type: f.type.toComplexType(),
-									expr: typedExpr != null ? Context.getTypedExpr(typedExpr) : null
-								});
-							}
 						case TInst(_.get() => t, tps):
 							for (f in t.fields.get()) {
 								var capitalizeInitialLetter = f.name.charAt(0).toUpperCase();
 								var nameRest = f.name.substring(1);
-								var fieldName = fieldPrefix.length == 0 ? f.name : fieldPrefix + capitalizeInitialLetter + nameRest;
+								var fieldName = f.name;
 								var typedExpr = f.expr();
 
 								switch (f.kind) {
@@ -155,42 +131,11 @@ class StructOfVectors {
 								typeFields.push({
 									name: fieldName,
 									sourceName: f.name,
-									secondary: i >= secondaryStride,
-									optional: f.meta.has(":optional"),
+									optional: f.meta.has(":optional") || optionalStructTypes.contains(structType),
 									ignore: f.meta.has(":ignore"),
 									type: f.type.toComplexType(),
 									expr: typedExpr != null ? Context.getTypedExpr(typedExpr) : null
 								});
-							}
-						case TType(_.get() => t, tps):
-							switch (t.type) {
-								case TAnonymous(a):
-									for (f in a.get().fields) {
-										var capitalizeInitialLetter = f.name.charAt(0).toUpperCase();
-										var nameRest = f.name.substring(1);
-										var fieldName = fieldPrefix.length == 0 ? f.name : fieldPrefix + capitalizeInitialLetter + nameRest;
-										var typedExpr = f.expr();
-
-										switch (f.kind) {
-											case FMethod(_):
-												continue;
-											case FVar(read, write) if ((read == AccCall && write == AccCall)
-												|| (read == AccCall && write == AccNever)):
-												continue;
-											default:
-										}
-
-										typeFields.push({
-											name: fieldName,
-											sourceName: f.name,
-											secondary: i >= secondaryStride,
-											optional: f.meta.has(":optional"),
-											ignore: f.meta.has(":ignore"),
-											type: f.type.toComplexType(),
-											expr: typedExpr != null ? Context.getTypedExpr(typedExpr) : null
-										});
-									}
-								default:
 							}
 						default:
 							Context.error('Unsupported type: $structType', Context.currentPos());
@@ -242,7 +187,7 @@ class StructOfVectors {
 							this.$fieldName[index] = this.$fieldName[lastIndex];
 						}
 					});
-					if (!f.secondary && !f.ignore) {
+					if (!f.ignore) {
 						pushArgs.push({name: fieldSourceName, type: fieldType, opt: f.optional});
 						insertArgs.push({name: fieldSourceName, type: fieldType, opt: f.optional});
 
@@ -250,13 +195,6 @@ class StructOfVectors {
 						insertArrayExprs.push(macro {
 							var old = this.$fieldName[index];
 							this.$fieldName[index] = $i{fieldSourceName};
-							this.$fieldName[length] = old;
-						});
-					} else {
-						pushArrayExprs.push(macro this.$fieldName[index] = $fieldExpr);
-						insertArrayExprs.push(macro {
-							var old = this.$fieldName[index];
-							this.$fieldName[index] = $fieldExpr;
 							this.$fieldName[length] = old;
 						});
 					}

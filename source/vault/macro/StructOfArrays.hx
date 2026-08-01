@@ -17,14 +17,12 @@ class StructOfArrays {
 		switch (type) {
 			case TInst(_.get() => cl, params):
 				var structTypes:Array<Type> = [];
-				var fieldPrefix = "";
-				var secondaryStride = 1;
+				var optionalStructTypes:Array<Type> = [];
 				var fields = Context.getBuildFields();
 				var typeFields:Array<{
 					name:String,
 					sourceName:String,
 					type:ComplexType,
-					secondary:Bool,
 					optional:Bool,
 					ignore:Bool,
 					expr:Expr
@@ -40,49 +38,54 @@ class StructOfArrays {
 				var classTypeParameterDecls:Array<TypeParamDecl> = [];
 				var classTypeParameters:Array<TypeParam> = [];
 
-				for (i in 0...params.length) {
-					var param = params[i];
-					switch (param) {
-						case TAbstract(_.get() => t, params):
-							var structType = param;
-							structTypes.push(structType.followWithAbstracts());
+				var nextOptional = false;
+				var lastExpr = null;
 
-							uniqueName += "_" + t.pack.join('') + t.name;
-							for (i in 0...t.params.length) {
-								classTypeParameterDecls.push({name: t.params[i].name});
-								classTypeParameters.push(TPType(t.params[i].t.toComplexType()));
+				function checkTypeMeta(expr:Expr) {
+					switch (expr.expr) {
+						case EMeta(s, e):
+							if (s.name == ':optional') {
+								nextOptional = true;
 							}
-						case TType(_.get() => structDefType, structTypeParams):
-							var structType = param;
-							structTypes.push(structType);
-							uniqueName += "_" + structDefType.pack.join('') + structDefType.name;
+							lastExpr = e;
+							e.iter(checkTypeMeta);
+						default:
+					}
+				}
+
+				for (i in 0...params.length) {
+					var param = params[i].followWithAbstracts();
+					switch (param) {
 						case TInst(_.get() => structDefType, structTypeParams):
-							var validStructType = true;
-							if (i >= secondaryStride) {
-								if (structDefType.name.charAt(0) == 'S') {
-									fieldPrefix = structDefType.name.substring(1);
-									try {
-										Context.getType(structDefType.name);
-									} catch (e) {
-										validStructType = false;
+							switch (structDefType.kind) {
+								case KExpr(expr):
+									checkTypeMeta(expr);
+									if (lastExpr != null) {
+										Context.typeExpr(lastExpr);
+										var typeName = lastExpr.toString();
+										var structType = Context.getType(typeName).followWithAbstracts();
+										uniqueName += "_" + typeName.replace('.', '');
+										for (i in 0...structDefType.params.length) {
+											classTypeParameterDecls.push({name: structDefType.params[i].name});
+											classTypeParameters.push(TPType(structDefType.params[i].t.toComplexType()));
+										}
+										if (nextOptional) {
+											optionalStructTypes.push(structType);
+										} else {
+											structTypes.push(structType);
+										}
+										nextOptional = false;
 									}
-								} else if (structDefType.name.charAt(0) == 'I') {
-									secondaryStride = Std.parseInt(structDefType.name.substring(1));
-									try {
-										Context.getType(structDefType.name);
-									} catch (e) {
-										validStructType = false;
+									lastExpr = null;
+									params[i] = null;
+								default:
+									var structType = param;
+									structTypes.push(structType);
+									uniqueName += "_" + structDefType.pack.join('') + structDefType.name;
+									for (i in 0...structDefType.params.length) {
+										classTypeParameterDecls.push({name: structDefType.params[i].name});
+										classTypeParameters.push(TPType(structDefType.params[i].t.toComplexType()));
 									}
-								}
-							}
-							if (validStructType) {
-								var structType = param;
-								structTypes.push(structType);
-								uniqueName += "_" + structDefType.pack.join('') + structDefType.name;
-								for (i in 0...structDefType.params.length) {
-									classTypeParameterDecls.push({name: structDefType.params[i].name});
-									classTypeParameters.push(TPType(structDefType.params[i].t.toComplexType()));
-								}
 							}
 						default:
 					}
@@ -98,10 +101,12 @@ class StructOfArrays {
 					var existingPath = fullPack.join(".") + "." + uniqueName;
 					Context.getType(existingPath);
 					return complexType;
-				} catch (e:Dynamic) {}
+				} catch (e) {}
 
-				for (i in 0...structTypes.length) {
-					var structType = structTypes[i];
+				var allStructTypes:Array<Type> = structTypes.concat(optionalStructTypes);
+
+				for (i in 0...allStructTypes.length) {
+					var structType = allStructTypes[i];
 					var structComplexType = structType.toComplexType();
 
 					switch (structType) {
@@ -109,7 +114,7 @@ class StructOfArrays {
 							for (f in t.fields.get()) {
 								var capitalizeInitialLetter = f.name.charAt(0).toUpperCase();
 								var nameRest = f.name.substring(1);
-								var fieldName = fieldPrefix.length == 0 ? f.name : fieldPrefix + capitalizeInitialLetter + nameRest;
+								var fieldName = f.name;
 								var typedExpr = f.expr();
 
 								switch (f.kind) {
@@ -124,42 +129,11 @@ class StructOfArrays {
 								typeFields.push({
 									name: fieldName,
 									sourceName: f.name,
-									secondary: i >= secondaryStride,
-									optional: f.meta.has(":optional"),
+									optional: f.meta.has(":optional") || optionalStructTypes.contains(structType),
 									ignore: f.meta.has(":ignore"),
 									type: f.type.toComplexType(),
 									expr: typedExpr != null ? Context.getTypedExpr(typedExpr) : null
 								});
-							}
-						case TType(_.get() => t, tps):
-							switch (t.type) {
-								case TAnonymous(a):
-									for (f in a.get().fields) {
-										var capitalizeInitialLetter = f.name.charAt(0).toUpperCase();
-										var nameRest = f.name.substring(1);
-										var fieldName = fieldPrefix.length == 0 ? f.name : fieldPrefix + capitalizeInitialLetter + nameRest;
-										var typedExpr = f.expr();
-
-										switch (f.kind) {
-											case FMethod(_):
-												continue;
-											case FVar(read, write) if ((read == AccCall && write == AccCall)
-												|| (read == AccCall && write == AccNever)):
-												continue;
-											default:
-										}
-
-										typeFields.push({
-											name: fieldName,
-											sourceName: f.name,
-											secondary: i >= secondaryStride,
-											optional: f.meta.has(":optional"),
-											ignore: f.meta.has(":ignore"),
-											type: f.type.toComplexType(),
-											expr: typedExpr != null ? Context.getTypedExpr(typedExpr) : null
-										});
-									}
-								default:
 							}
 						default:
 							Context.error('Unsupported type: $structType', Context.currentPos());
@@ -214,15 +188,12 @@ class StructOfArrays {
 					shiftArrayExprs.push(macro this.$fieldName.shift());
 					popArrayExprs.push(macro this.$fieldName.pop());
 
-					if (!f.secondary && !f.ignore) {
-						pushArgs.push({name: fieldName, type: fieldType, opt: f.optional});
-						insertArgs.push({name: fieldName, type: fieldType, opt: f.optional});
+					if (!f.ignore) {
+						pushArgs.push({name: fieldSourceName, type: fieldType, opt: f.optional});
+						insertArgs.push({name: fieldSourceName, type: fieldType, opt: f.optional});
 
-						pushArrayExprs.push(macro this.$fieldName.push($i{fieldName}));
-						insertArrayExprs.push(macro this.$fieldName.insert(index, $i{fieldName}));
-					} else {
-						pushArrayExprs.push(macro this.$fieldName.push($fieldExpr));
-						insertArrayExprs.push(macro this.$fieldName.insert(index, $fieldExpr));
+						pushArrayExprs.push(macro this.$fieldName.push($i{fieldSourceName}));
+						insertArrayExprs.push(macro this.$fieldName.insert(index, $i{fieldSourceName}));
 					}
 				}
 				shiftExprs.push(macro if (length > 0) {
@@ -263,7 +234,7 @@ class StructOfArrays {
 
 				fields.push({
 					name: "resize",
-					kind: FieldType.FFun({args: [{name: "size", type: macro :Int}], ret: macro :Void, expr: macro {$b{resizeExprs};}}),
+					kind: FieldType.FFun({args: [{name: "size", type: macro :Int}], ret: macro :Void, expr: macro $b{resizeExprs}}),
 					pos: Context.currentPos(),
 					access: [APublic, AInline]
 				});
@@ -289,6 +260,7 @@ class StructOfArrays {
 					pos: Context.currentPos(),
 					access: [APublic, AInline]
 				});
+
 				fields.push({
 					name: "insert",
 					kind: FieldType.FFun({
