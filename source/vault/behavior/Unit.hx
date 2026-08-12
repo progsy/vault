@@ -3,9 +3,7 @@ package vault.behavior;
 @:allow(vault.behavior.World)
 @:allow(vault.behavior.System)
 @:allow(vault.behavior.SystemExtension)
-abstract Unit(Int) {
-	public static final INVALID:Unit = new Unit(0xFFFF, 0xFFFF);
-
+abstract Unit<T>(Int) {
 	public var index(get, set):Int;
 	public var generation(get, set):Int;
 
@@ -29,5 +27,9 @@ abstract Unit(Int) {
 		this = 0;
 		index = i;
 		generation = g;
+	}
+
+	@:generic public static inline function getInvalid<T>():Unit<T> {
+		return new Unit<T>(0xFFFF, 0xFFFF);
 	}
 }
