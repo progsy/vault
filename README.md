@@ -1,6 +1,7 @@
 # Vault
-Vault is a game-oriented library which contains a set of essential modules for game development. Some of the notable modules are:
+Vault is a fundamental engine-agnostic library for game development library which contains a set of essential modules for game development. Some of the notable modules are:
 - vault.behavior.**Coroutine**: Macro-powered coroutines with advanced features and low overhead.
+- vault.behavior.**System**: Flexible, ECS-like, data-oriented execution model.
 - vault.behavior.**Signal**: General-purpose event dispatcher that supports variadic type parameters and nesting.
 - vault.behavior.**Schedule**: Sequential executor for tasks/jobs.
 - vault.data.**StructOfArrays** & vault.data.**StructOfVectors**: Alternative cache-friendly containers.
@@ -136,6 +137,60 @@ object.speed = 20.5;
 object.acceleration = 0.182;
 // Later if you want to reset the fields to their initial values
 object.reset();
+```
+### System
+```haxe
+// We define our components
+class TransformComponent {
+    public var x:Float;
+    public var y:Float;
+    public var z:Float;
+    public var angle:Float;
+}
+
+class VelocityComponent {
+    public var directionX:Float;
+    public var directionY:Float;
+    public var directionZ:Float;
+    public var speed:Float;
+}
+
+// We specify which components this system is going to use. You can also use @:c as a shortcut.
+@:component(TransformComponent) @:component(VelocityComponent)
+class MovementSystem implements vault.behavior.System {
+    public function new(capacity:Int) {
+        setup(capacity);
+    }
+
+    // Update functions are executed in the order in which they are declared. You must call system.update(dt) to execute these sub-updates.
+    // You can have as many sub-updates as you want, they are inlined and therefore considered cheap.
+    @:update function preUpdate(dt:Float) {
+        // Do stuff...
+    }
+
+    @:update function midUpdate(dt:Float) {
+        // Loop through active units/indices
+        for(i in activeIndices) {
+            transform.x[i] += velocity.directionX[i] * velocity.speed[i];
+            transform.y[i] += velocity.directionY[i] * velocity.speed[i];
+            transform.z[i] += velocity.directionZ[i] * velocity.speed[i];
+        }
+    }
+
+    // Runs every 5 major exections.
+    @:update(5) function expensiveMidUpdate(dt:Float) {
+        // Do stuff...
+    }
+
+    @:update function postUpdate(dt:Float) {
+        // Do stuff...
+    }
+}
+
+// You can create units just like this:
+var unit = system.createUnit();
+// Later when you no longer need this unit:
+system.destroyUnit(unit);
 ```
 
 ## Experimental
