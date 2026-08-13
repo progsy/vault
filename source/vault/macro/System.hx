@@ -14,6 +14,7 @@ class System {
 		var fields:Array<Field> = [];
 		var buildFields = Context.getBuildFields();
 		var type = Context.getLocalType();
+		var unitType:Type;
 		var componentArrays:Array<{
 			name:String,
 			type:ComplexType,
@@ -94,6 +95,35 @@ class System {
 						addComponentArray(componentTypeName, componentType);
 					}
 				}
+				var unitName = t.name;
+				var suffixIndex = unitName.indexOf('System');
+				suffixIndex = suffixIndex == -1 ? unitName.indexOf('Sys') : suffixIndex;
+				if (suffixIndex != -1) {
+					unitName = unitName.substring(0, suffixIndex) + 'Unit';
+				} else {
+					unitName += 'Unit';
+				}
+
+				var invalidUnitField:Field = {
+					name: "INVALID",
+					kind: FVar(null, cast vault.behavior.Unit),
+					access: [APublic, AStatic, AFinal],
+					pos: Context.currentPos()
+				};
+
+				Context.defineType({
+					pack: t.pack,
+					name: unitName,
+					pos: t.pos,
+					kind: TDAbstract(macro :vault.behavior.Unit),
+					meta: [{name: ':forward', params: [macro index, macro generation], pos: t.pos}],
+					fields: []
+				});
+				if (t.pack.length > 0) {
+					unitType = Context.getType(t.pack.join('.') + '.' + unitName);
+				} else {
+					unitType = Context.getType(unitName);
+				}
 			default:
 				Context.error('The system must be a class', Context.currentPos());
 		}
@@ -173,11 +203,12 @@ class System {
 			access: [APrivate]
 		});
 
+		var unitComplexType = unitType.toComplexType();
 		fields.push({
 			name: "createUnit",
 			kind: FFun({
 				args: [],
-				ret: macro :vault.behavior.Unit,
+				ret: unitComplexType,
 				expr: macro {
 					if (count < capacity) {
 						var lastIndex = freeIndices.pop();
@@ -188,9 +219,9 @@ class System {
 						internalStatus.active[index] = true;
 						activeIndices.push(index);
 						count++;
-						return new vault.behavior.Unit(index, ++internalStatus.generation[index]);
+						return cast new vault.behavior.Unit(index, ++internalStatus.generation[index]);
 					}
-					return vault.behavior.Unit.INVALID;
+					return cast vault.behavior.Unit.INVALID;
 				},
 			}),
 			pos: Context.currentPos(),
@@ -200,7 +231,7 @@ class System {
 		fields.push({
 			name: "destoryUnit",
 			kind: FFun({
-				args: [{name: "unit", type: macro :vault.behavior.Unit}],
+				args: [{name: "unit", type: unitComplexType}],
 				ret: macro :Bool,
 				expr: macro {
 					if (isUnitValid(unit)) {
@@ -221,7 +252,7 @@ class System {
 		fields.push({
 			name: "isUnitValid",
 			kind: FFun({
-				args: [{name: "unit", type: macro :vault.behavior.Unit}],
+				args: [{name: "unit", type: unitComplexType}],
 				ret: macro :Bool,
 				expr: macro {
 					return unit.index < capacity ? (internalStatus.active[unit.index]
