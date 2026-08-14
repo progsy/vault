@@ -43,7 +43,7 @@ class Json {
 				var complexType = TPath(typePath);
 
 				try {
-					var existingPath = fullPack.join(".") + "." + uniqueName;
+					var existingPath = fullPack.concat([uniqueName]).join(".");
 					Context.getType(existingPath);
 					return complexType;
 				} catch (e:Dynamic) {}

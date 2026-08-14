@@ -8,6 +8,7 @@ import haxe.macro.Type;
 using haxe.macro.ExprTools;
 using haxe.macro.TypeTools;
 using haxe.macro.ComplexTypeTools;
+using StringTools;
 
 class System {
 	static function build():Array<Field> {
@@ -42,7 +43,7 @@ class System {
 						typeParams.push(TPType(type.toComplexType()));
 						if (t.superClass != null) {
 							var parentClassType = t.superClass.t.get();
-							var parentType = Context.getType(parentClassType.module != parentClassType.name ? '${parentClassType.module}.${parentClassType.name}' : parentClassType.pack.concat([parentClassType.name])
+							var parentType = Context.getType(!parentClassType.module.endsWith(parentClassType.name) ? '${parentClassType.module}.${parentClassType.name}' : parentClassType.pack.concat([parentClassType.name])
 								.join('.'));
 							submitTypeParameters(parentType.followWithAbstracts(), typeParams);
 						}

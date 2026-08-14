@@ -38,54 +38,20 @@ class StructOfArrays {
 				var classTypeParameterDecls:Array<TypeParamDecl> = [];
 				var classTypeParameters:Array<TypeParam> = [];
 
-				var nextOptional = false;
-				var lastExpr = null;
-
-				function checkTypeMeta(expr:Expr) {
-					switch (expr.expr) {
-						case EMeta(s, e):
-							if (s.name == ':optional') {
-								nextOptional = true;
-							}
-							lastExpr = e;
-							e.iter(checkTypeMeta);
-						default:
-					}
-				}
-
 				for (i in 0...params.length) {
 					var param = params[i].followWithAbstracts();
 					switch (param) {
 						case TInst(_.get() => structDefType, structTypeParams):
-							switch (structDefType.kind) {
-								case KExpr(expr):
-									checkTypeMeta(expr);
-									if (lastExpr != null) {
-										Context.typeExpr(lastExpr);
-										var typeName = lastExpr.toString();
-										var structType = Context.getType(typeName).followWithAbstracts();
-										uniqueName += "_" + typeName.replace('.', '');
-										for (i in 0...structDefType.params.length) {
-											classTypeParameterDecls.push({name: structDefType.params[i].name});
-											classTypeParameters.push(TPType(structDefType.params[i].t.toComplexType()));
-										}
-										if (nextOptional) {
-											optionalStructTypes.push(structType);
-										} else {
-											structTypes.push(structType);
-										}
-										nextOptional = false;
-									}
-									lastExpr = null;
-									params[i] = null;
-								default:
-									var structType = param;
-									structTypes.push(structType);
-									uniqueName += "_" + structDefType.pack.join('') + structDefType.name;
-									for (i in 0...structDefType.params.length) {
-										classTypeParameterDecls.push({name: structDefType.params[i].name});
-										classTypeParameters.push(TPType(structDefType.params[i].t.toComplexType()));
-									}
+							var structType = param;
+							structTypes.push(structType);
+							if (structDefType.module.endsWith(structDefType.name)) {
+								uniqueName += "_" + structDefType.pack.join('') + structDefType.name;
+							} else {
+								uniqueName += "_" + structDefType.module.replace('.', '') + structDefType.name;
+							}
+							for (i in 0...structDefType.params.length) {
+								classTypeParameterDecls.push({name: structDefType.params[i].name});
+								classTypeParameters.push(TPType(structDefType.params[i].t.toComplexType()));
 							}
 						default:
 					}
@@ -98,7 +64,7 @@ class StructOfArrays {
 				});
 
 				try {
-					var existingPath = fullPack.join(".") + "." + uniqueName;
+					var existingPath = fullPack.concat([uniqueName]).join(".");
 					Context.getType(existingPath);
 					return complexType;
 				} catch (e) {}
