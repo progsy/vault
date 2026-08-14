@@ -22,7 +22,7 @@ class System {
 			componentType:Type
 		}> = [];
 
-		function addComponentArray(name:String, componentType:Type) {
+		function addComponentArray(name:String, componentType:Type, raw:Bool = false) {
 			var componentArray:{
 				name:String,
 				type:ComplexType,
@@ -35,11 +35,15 @@ class System {
 				componentType: componentType
 			};
 
-			switch (componentType.followWithAbstracts()) {
-				case TAbstract(_.get() => t, params):
-					componentArray.type = macro :haxe.ds.Vector;
-				default:
-					componentArray.type = macro :vault.data.StructOfVectors;
+			if (raw) {
+				componentArray.type = macro :haxe.ds.Vector;
+			} else {
+				switch (componentType.followWithAbstracts()) {
+					case TAbstract(_.get() => t, params):
+						componentArray.type = macro :haxe.ds.Vector;
+					default:
+						componentArray.type = macro :vault.data.StructOfVectors;
+				}
 			}
 			switch (componentArray.type) {
 				case TPath(p):
@@ -68,8 +72,8 @@ class System {
 						if (m.params == null) {
 							Context.error('You must specify component type', m.pos);
 						}
-						if (m.params.length != 1) {
-							Context.error('You must specify exactly one component type', m.pos);
+						if (m.params.length < 1) {
+							Context.error('You must specify one component type', m.pos);
 						}
 
 						var ps = m.params[0].toString();
@@ -82,6 +86,11 @@ class System {
 							Context.error('Could not find type ($ps)', m.params[0].pos);
 						}
 
+						var componentRaw:Bool;
+						if (m.params.length == 2) {
+							componentRaw = m.params[1].getValue() == true;
+						}
+
 						switch (componentType) {
 							case TInst(_.get() => ct, _):
 								componentTypeName = ct.name;
@@ -92,7 +101,7 @@ class System {
 							default:
 						}
 
-						addComponentArray(componentTypeName, componentType);
+						addComponentArray(componentTypeName, componentType, componentRaw);
 					}
 				}
 			default:
