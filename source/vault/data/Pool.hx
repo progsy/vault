@@ -39,7 +39,7 @@ class Pool<T> {
 		length++;
 	}
 
-	public function iterator():PoolIterator<T> {
+	public inline function iterator():PoolIterator<T> {
 		return new PoolIterator<T>(this);
 	}
 }
