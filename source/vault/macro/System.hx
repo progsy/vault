@@ -34,11 +34,27 @@ class System {
 				typePath: null,
 				componentType: componentType
 			};
+			var followedComponentType = componentType;
+
+			function submitTypeParameters(type:Type, typeParams:Array<TypeParam>) {
+				switch (type) {
+					case TInst(_.get() => t, params):
+						typeParams.push(TPType(type.toComplexType()));
+						if (t.superClass != null) {
+							var parentClassType = t.superClass.t.get();
+							var parentType = Context.getType(parentClassType.module != parentClassType.name ? '${parentClassType.module}.${parentClassType.name}' : parentClassType.pack.concat([parentClassType.name])
+								.join('.'));
+							submitTypeParameters(parentType.followWithAbstracts(), typeParams);
+						}
+					default:
+						Context.error('Something wrong happened', Context.currentPos());
+				}
+			}
 
 			if (raw) {
 				componentArray.type = macro :haxe.ds.Vector;
 			} else {
-				switch (componentType.followWithAbstracts()) {
+				switch (followedComponentType) {
 					case TAbstract(_.get() => t, params):
 						componentArray.type = macro :haxe.ds.Vector;
 					default:
@@ -47,7 +63,8 @@ class System {
 			}
 			switch (componentArray.type) {
 				case TPath(p):
-					p.params = [TPType(componentType.toComplexType())];
+					p.params = [];
+					submitTypeParameters(followedComponentType, p.params);
 					componentArray.typePath = p;
 				default:
 					Context.error('Something wrong happened', Context.currentPos());
