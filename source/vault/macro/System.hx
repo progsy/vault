@@ -123,6 +123,20 @@ class System {
 		});
 
 		fields.push({
+			name: "createSignal",
+			kind: FProp("default", "null", macro :vault.behavior.Signal<vault.behavior.Unit<$complexType>>),
+			access: [APublic],
+			pos: Context.currentPos()
+		});
+
+		fields.push({
+			name: "destroySignal",
+			kind: FProp("default", "null", macro :vault.behavior.Signal<vault.behavior.Unit<$complexType>>),
+			access: [APublic],
+			pos: Context.currentPos()
+		});
+
+		fields.push({
 			name: "activeIndices",
 			kind: FVar(macro :Array<Int>),
 			access: [APrivate],
@@ -198,7 +212,10 @@ class System {
 						internalStatus.active[index] = true;
 						activeIndices.push(index);
 						count++;
-						return new vault.behavior.Unit(index, ++internalStatus.generation[index]);
+
+						var unit = new vault.behavior.Unit(index, ++internalStatus.generation[index]);
+						createSignal.emit(unit);
+						return unit;
 					}
 					return vault.behavior.Unit.getInvalid();
 				},
@@ -219,6 +236,8 @@ class System {
 						freeIndices.push(unit.index);
 						internalStatus.active[unit.index] = false;
 						count--;
+
+						destroySignal.emit(unit);
 						return true;
 					}
 					return false;
