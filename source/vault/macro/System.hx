@@ -41,11 +41,30 @@ class System {
 				switch (type) {
 					case TInst(_.get() => t, params):
 						typeParams.push(TPType(type.toComplexType()));
-						if (t.superClass != null) {
-							var parentClassType = t.superClass.t.get();
-							var parentType = Context.getType(!parentClassType.module.endsWith(parentClassType.name) ? '${parentClassType.module}.${parentClassType.name}' : parentClassType.pack.concat([parentClassType.name])
-								.join('.'));
-							submitTypeParameters(parentType.followWithAbstracts(), typeParams);
+						for (m in t.meta.get()) {
+							if (m.name == ":extend" || m.name == ":ext" || m.name == ":e") {
+								var extendingTypes:Array<Type> = [];
+								if (m.params == null) {
+									Context.error('You must specify extending type', m.pos);
+								}
+								if (m.params.length < 1) {
+									Context.error('You must specify at least one extending type', m.pos);
+								}
+								for (i in 0...m.params.length) {
+									var ps = m.params[i].toString();
+									if (ps.indexOf('<') != -1) {
+										Context.error('Extended types must not contain type parameters', m.params[i].pos);
+									}
+									try {
+										extendingTypes.push(Context.getType(ps));
+									} catch (e) {
+										Context.error('Could not find type ($ps)', m.params[i].pos);
+									}
+								}
+								for (extendingType in extendingTypes) {
+									submitTypeParameters(extendingType, typeParams);
+								}
+							}
 						}
 					default:
 						Context.error('Something wrong happened', Context.currentPos());
@@ -86,7 +105,8 @@ class System {
 				for (m in t.meta.get()) {
 					if (m.name == ":component" || m.name == ":c" || m.name == ":comp") {
 						var componentType:Type = null;
-						var componentTypeName:String = '';
+						var componentName:String = '';
+						var componentRaw:Bool;
 						if (m.params == null) {
 							Context.error('You must specify component type', m.pos);
 						}
@@ -104,22 +124,30 @@ class System {
 							Context.error('Could not find type ($ps)', m.params[0].pos);
 						}
 
-						var componentRaw:Bool;
-						if (m.params.length == 2) {
-							componentRaw = m.params[1].getValue() == true;
+						if (m.params.length > 1) {
+							for (i in 1...m.params.length) {
+								var v:Dynamic = m.params[i].getValue();
+								if (Std.isOfType(v, Bool)) {
+									componentRaw = v;
+								} else if (Std.isOfType(v, String)) {
+									componentName = v;
+								}
+							}
 						}
 
-						switch (componentType) {
-							case TInst(_.get() => ct, _):
-								componentTypeName = ct.name;
-							case TAbstract(_.get() => ct, _):
-								componentTypeName = ct.name;
-							case TType(_.get() => ct, _):
-								componentTypeName = ct.name;
-							default:
+						if (componentName.length == 0) {
+							switch (componentType) {
+								case TInst(_.get() => ct, _):
+									componentName = ct.name;
+								case TAbstract(_.get() => ct, _):
+									componentName = ct.name;
+								case TType(_.get() => ct, _):
+									componentName = ct.name;
+								default:
+							}
 						}
 
-						addComponentArray(componentTypeName, componentType, componentRaw);
+						addComponentArray(componentName, componentType, componentRaw);
 					}
 				}
 			default:
