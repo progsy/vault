@@ -170,14 +170,16 @@ class System {
 
 		fields.push({
 			name: "createSignal",
-			kind: FProp("default", "null", macro :vault.behavior.Signal<vault.behavior.Unit<$complexType>>),
+			kind: FProp("default", "null", macro :vault.behavior.Signal<vault.behavior.Unit<$complexType>>,
+				macro new vault.behavior.Signal<vault.behavior.Unit<$complexType>>()),
 			access: [APublic],
 			pos: Context.currentPos()
 		});
 
 		fields.push({
 			name: "destroySignal",
-			kind: FProp("default", "null", macro :vault.behavior.Signal<vault.behavior.Unit<$complexType>>),
+			kind: FProp("default", "null", macro :vault.behavior.Signal<vault.behavior.Unit<$complexType>>,
+				macro new vault.behavior.Signal<vault.behavior.Unit<$complexType>>()),
 			access: [APublic],
 			pos: Context.currentPos()
 		});
@@ -350,7 +352,6 @@ class System {
 									}
 								}
 								subUpdates.push({name: bf.name, frequency: frequency});
-								bf.access.push(AInline);
 
 								if (frequency > 1) {
 									fields.push({
