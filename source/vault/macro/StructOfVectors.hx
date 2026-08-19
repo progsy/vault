@@ -173,7 +173,7 @@ class StructOfVectors {
 				});
 				popExprs.push(macro return index);
 				shiftExprs.push(macro if (length > 0) {
-					for (i in 1...length) {
+					for (i in (start + 1)...length) {
 						$b{shiftArrayExprs};
 					}
 					length--;
@@ -273,7 +273,7 @@ class StructOfVectors {
 				fields.push({
 					name: "shift",
 					kind: FieldType.FFun({
-						args: [],
+						args: [{name: "start", type: macro :Int, value: macro 0}],
 						ret: macro :Void,
 						expr: macro $b{shiftExprs}
 					}),
