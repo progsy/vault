@@ -93,10 +93,6 @@ class Path {
 		length = 0;
 	}
 
-	public inline function pop() {
-		return --length;
-	}
-
 	public inline function calculateTotalDistance():Float {
 		if (nodes.length <= 1) {
 			return 0.0;

@@ -15,7 +15,7 @@ private class ValidationData {
 	@:ignore public var generation:Int = 0;
 }
 
-private class SearchData {
+private class Searcher {
 	@:ignore public var gScore:Float;
 	@:ignore public var fScore:Float;
 	@:ignore public var parent:NodeHandle;
@@ -24,17 +24,127 @@ private class SearchData {
 	@:ignore public var heapIndex:Int = -1;
 }
 
+private class PendingChange {
+	public var node:NodeHandle;
+	public var flags:Int;
+	public var weight:Float;
+}
+
+private class Request {
+	public var callback:() -> Void;
+	public var path:Path;
+	public var mode:PathMode;
+	public var flags:Int;
+	public var sX:Float;
+	public var sY:Float;
+	public var sZ:Float;
+	public var dX:Float;
+	public var dY:Float;
+	public var dZ:Float;
+}
+
+private class Heap {
+	var currentId:Int;
+	var nodes:Array<NodeHandle> = [];
+	var length:Int;
+
+	public function new(capacity:Int) {
+		nodes.resize(capacity);
+	}
+
+	public inline function clear() {
+		length = 0;
+	}
+
+	public inline function push(node:NodeHandle, searchers:StructOfVectors<Searcher>):Void {
+		var heapIndex = length++;
+		nodes[heapIndex] = node;
+		searchers.heapIndex[node.index] = heapIndex;
+		fetchUpper(heapIndex, searchers);
+	}
+
+	public inline function pop(searchers:StructOfVectors<Searcher>):NodeHandle {
+		var top = nodes[0];
+		searchers.heapIndex[top.index] = -1;
+		length--;
+		if (length > 0) {
+			nodes[0] = nodes[length];
+			searchers.heapIndex[nodes[0].index] = 0;
+			fetchBottom(0, searchers);
+		}
+		return top;
+	}
+
+	public inline function fetchUpper(heapIndex:Int, searchers:StructOfVectors<Searcher>):Void {
+		var node = nodes[heapIndex];
+		var nodeIndex = node.index;
+		while (heapIndex > 0) {
+			var parentNodeHeapIndex = (heapIndex - 1) >> 1;
+			var parentNode = nodes[parentNodeHeapIndex];
+			var parentNodeIndex = parentNode.index;
+			if (searchers.fScore[nodeIndex] < searchers.fScore[parentNodeIndex]) {
+				nodes[heapIndex] = parentNode;
+				searchers.heapIndex[parentNodeIndex] = heapIndex;
+				heapIndex = parentNodeHeapIndex;
+			} else {
+				break;
+			}
+		}
+
+		nodes[heapIndex] = node;
+		searchers.heapIndex[nodeIndex] = heapIndex;
+	}
+
+	public inline function fetchBottom(heapIndex:Int, searchers:StructOfVectors<Searcher>):Void {
+		var node = nodes[heapIndex];
+		var nodeIndex = node.index;
+		var f = searchers.fScore[nodeIndex];
+		while (true) {
+			var left = (heapIndex << 1) + 1;
+			if (left >= length) {
+				break;
+			}
+
+			var right = left + 1;
+			var smallest = left;
+			if (right < length && searchers.fScore[nodes[right].index] < searchers.fScore[nodes[left].index]) {
+				smallest = right;
+			}
+
+			var childNode = nodes[smallest];
+			var childNodeIndex = childNode.index;
+			if (searchers.fScore[childNodeIndex] < f) {
+				nodes[heapIndex] = childNode;
+				searchers.heapIndex[childNodeIndex] = heapIndex;
+				heapIndex = smallest;
+			} else {
+				break;
+			}
+		}
+		nodes[heapIndex] = node;
+		searchers.heapIndex[nodeIndex] = heapIndex;
+	}
+}
+
 @:access(vault.experimental.navigation)
 class Pathfinder {
 	public static var spatialMapCellInvSize:Float = 1 / 2.5;
 
 	public var connectionsPerNode(default, null):Int;
+	#if sys
+	public var locked(default, null):haxe.atomic.AtomicBool = new haxe.atomic.AtomicBool(false);
+	#end
 
-	var nodes:vault.data.StructOfVectors<Node, ValidationData, SearchData>;
-	var connections:vault.data.StructOfVectors<ConnectionData>;
-	var currentId:Int;
-	var heap:Array<NodeHandle> = [];
-	var heapSize:Int;
+	var nodes:StructOfVectors<Node, ValidationData>;
+	var pendingChanges:StructOfVectors<PendingChange>;
+	var connections:StructOfVectors<ConnectionData>;
+	var localSearchers:StructOfVectors<Searcher>;
+	var localHeap:Heap;
+	#if sys
+	var threadSearchers:StructOfVectors<Searcher>;
+	var threadHeap:Heap;
+	var requests:StructOfVectors<Request>;
+	#end
 	var spatialMap:Map<Int, Array<NodeHandle>> = [];
 
 	static inline function hash(x:Float, y:Float, z:Float) {
@@ -45,9 +155,17 @@ class Pathfinder {
 	}
 
 	public inline function new(maxNodes:Int, connectionsPerNode:Int = 12) {
-		nodes = new vault.data.StructOfVectors<Node, ValidationData, SearchData>(maxNodes);
-		connections = new vault.data.StructOfVectors<ConnectionData>(maxNodes * connectionsPerNode);
 		this.connectionsPerNode = connectionsPerNode;
+		connections = new StructOfVectors<ConnectionData>(maxNodes * connectionsPerNode);
+		nodes = new StructOfVectors<Node, ValidationData>(maxNodes);
+		pendingChanges = new StructOfVectors<PendingChange>(maxNodes);
+		localSearchers = new StructOfVectors<Searcher>(maxNodes);
+		localHeap = new Heap(maxNodes);
+		#if sys
+		threadSearchers = new StructOfVectors<Searcher>(maxNodes);
+		threadHeap = new Heap(maxNodes);
+		requests = new StructOfVectors<Request>(32);
+		#end
 	}
 
 	public inline function getNodeHandle(index:Int):NodeHandle {
@@ -56,29 +174,28 @@ class Pathfinder {
 
 	public function createNode(x:Float, y:Float, z:Float, flags:Int, weight:Float):NodeHandle {
 		var node:NodeHandle = NodeHandle.INVALID;
-		if (nodes.length + 1 < node.index) {
-			var index = nodes.push(x, y, z, flags, weight);
-			node.index = index;
-			node.generation = ++nodes.generation[index];
-			nodes.freed[index] = false;
-
-			var key = hash(x, y, z);
-			var cell = spatialMap.get(key);
-			if (cell == null) {
-				cell = [];
-				spatialMap.set(key, cell);
-			}
-			cell.push(node);
+		if (locked.load() || nodes.length + 1 >= node.index) {
+			return node;
 		}
+
+		var index = nodes.push(x, y, z, flags, weight);
+		node.index = index;
+		node.generation = ++nodes.generation[index];
+		nodes.freed[index] = false;
+
+		var key = hash(x, y, z);
+		var cell = spatialMap.get(key);
+		if (cell == null) {
+			cell = [];
+			spatialMap.set(key, cell);
+		}
+		cell.push(node);
 		return node;
 	}
 
 	public function destroyNode(node:NodeHandle):Bool {
 		var nodeIndex = node.index;
-		if (node == NodeHandle.INVALID) {
-			return false;
-		}
-		if (node.generation != nodes.generation[nodeIndex]) {
+		if (locked.load() || node == NodeHandle.INVALID || node.generation != nodes.generation[nodeIndex]) {
 			return false;
 		}
 
@@ -99,7 +216,7 @@ class Pathfinder {
 	public function connectNodes(nodeA:NodeHandle, nodeB:NodeHandle):Void {
 		var nodeAIndex = nodeA.index;
 		var nodeBIndex = nodeB.index;
-		if (nodeA == NodeHandle.INVALID || nodeB == NodeHandle.INVALID) {
+		if (locked.load() || nodeA == NodeHandle.INVALID || nodeB == NodeHandle.INVALID) {
 			return;
 		}
 		if (nodes.freed[nodeAIndex]
@@ -121,7 +238,7 @@ class Pathfinder {
 	public function disconnectNodes(nodeA:NodeHandle, nodeB:NodeHandle):Void {
 		var nodeAIndex = nodeA.index;
 		var nodeBIndex = nodeB.index;
-		if (nodeA == NodeHandle.INVALID || nodeB == NodeHandle.INVALID) {
+		if (locked.load() || nodeA == NodeHandle.INVALID || nodeB == NodeHandle.INVALID) {
 			return;
 		}
 		if (nodes.freed[nodeAIndex]
@@ -171,7 +288,11 @@ class Pathfinder {
 		if (node != NodeHandle.INVALID) {
 			var nodeIndex = node.index;
 			if (!nodes.freed[nodeIndex] && node.generation == nodes.generation[nodeIndex]) {
-				nodes.flags[nodeIndex] = flags;
+				if (!locked.load()) {
+					nodes.flags[nodeIndex] = flags;
+				} else {
+					pendingChanges.push(node, flags, nodes.weight[nodeIndex]);
+				}
 			}
 		}
 	}
@@ -191,7 +312,11 @@ class Pathfinder {
 		var nodeIndex = node.index;
 		if (node != NodeHandle.INVALID) {
 			if (!nodes.freed[nodeIndex] && node.generation == nodes.generation[nodeIndex]) {
-				nodes.weight[nodeIndex] = weight;
+				if (!locked.load()) {
+					nodes.weight[nodeIndex] = weight;
+				} else {
+					pendingChanges.push(node, nodes.flags[nodeIndex], weight);
+				}
 			}
 		}
 	}
@@ -268,18 +393,35 @@ class Pathfinder {
 		for (i in 0...nodes.length) {
 			nodes.freed[i] = false;
 			nodes.connectionCount[i] = 0;
-			nodes.searchId[i] = -1;
-			nodes.closedId[i] = -1;
-			nodes.heapIndex[i] = -1;
+		}
+		for (i in 0...localSearchers.length) {
+			localSearchers.searchId[i] = -1;
+			localSearchers.closedId[i] = -1;
+			localSearchers.heapIndex[i] = -1;
 		}
 		for (cell in spatialMap) {
 			cell.resize(0);
 		}
-		currentId = 0;
-		heapSize = 0;
+		@:privateAccess {
+			localHeap.currentId = 0;
+			localHeap.length = 0;
+		}
 	}
 
-	function track(path:Path, mode:PathMode, flags:Int, start:NodeHandle, end:NodeHandle):Void {
+	function applyPendingChanges():Void {
+		for (i in 0...pendingChanges.length) {
+			var node = pendingChanges.node[i];
+			var nodeIndex = node.index;
+			var nodeGeneration = node.generation;
+			if (!nodes.freed[nodeIndex] && nodeGeneration == nodes.generation[nodeIndex]) {
+				nodes.flags[nodeIndex] = pendingChanges.flags[i];
+				nodes.weight[nodeIndex] = pendingChanges.weight[i];
+			}
+		}
+		pendingChanges.clear();
+	}
+
+	function track(searchers:StructOfVectors<Searcher>, heap:Heap, path:Path, mode:PathMode, flags:Int, start:NodeHandle, end:NodeHandle):Void {
 		var startIndex = start.index;
 		var endIndex = end.index;
 		if (start == NodeHandle.INVALID || end == NodeHandle.INVALID) {
@@ -301,19 +443,19 @@ class Pathfinder {
 			return;
 		}
 
-		currentId++;
-		heapSize = 0;
 		var bestClosest = start;
 		var bestClosestScore = estimate(start, end);
-		nodes.gScore[startIndex] = 0;
-		nodes.fScore[startIndex] = bestClosestScore;
-		nodes.searchId[startIndex] = currentId;
-		nodes.closedId[startIndex] = -1;
-		nodes.parent[startIndex] = NodeHandle.INVALID;
-		pushHeap(start);
+		heap.clear();
+		heap.push(start, searchers);
+		heap.currentId++;
+		searchers.gScore[startIndex] = 0;
+		searchers.fScore[startIndex] = bestClosestScore;
+		searchers.searchId[startIndex] = heap.currentId;
+		searchers.closedId[startIndex] = -1;
+		searchers.parent[startIndex] = NodeHandle.INVALID;
 
-		while (heapSize > 0) {
-			var current = popHeap();
+		while (heap.length > 0) {
+			var current = heap.pop(searchers);
 			var currentIndex = current.index;
 			var currentGeneration = current.generation;
 			if (currentGeneration != nodes.generation[currentIndex]) {
@@ -327,11 +469,11 @@ class Pathfinder {
 			}
 
 			if (current == end) {
-				backtrack(path, end);
+				backtrack(searchers, path, end);
 				return;
 			}
 
-			nodes.closedId[currentIndex] = currentId;
+			searchers.closedId[currentIndex] = heap.currentId;
 			var connectionStart = (currentIndex * connectionsPerNode);
 			for (i in 0...nodes.connectionCount[currentIndex]) {
 				var connectionIndex = connectionStart + i;
@@ -341,25 +483,25 @@ class Pathfinder {
 				var neighborGeneration = neighbor.generation;
 
 				if (neighbor == NodeHandle.INVALID
-					|| nodes.closedId[neighborIndex] == currentId
+					|| searchers.closedId[neighborIndex] == heap.currentId
 					|| nodes.freed[neighborIndex]
 					|| neighborGeneration != nodes.generation[neighborIndex]
 					|| nodes.flags[neighborIndex] & flags == 0) {
 					continue;
 				}
 
-				var ng = nodes.gScore[currentIndex] + connections.distance[connectionIndex] * nodes.weight[neighborIndex];
-				if (nodes.searchId[neighborIndex] != currentId || ng < nodes.gScore[neighborIndex]) {
-					nodes.parent[neighborIndex] = current;
-					nodes.gScore[neighborIndex] = ng;
-					nodes.fScore[neighborIndex] = ng + neighborDistance;
+				var ng = searchers.gScore[currentIndex] + connections.distance[connectionIndex] * nodes.weight[neighborIndex];
+				if (searchers.searchId[neighborIndex] != heap.currentId || ng < searchers.gScore[neighborIndex]) {
+					searchers.parent[neighborIndex] = current;
+					searchers.gScore[neighborIndex] = ng;
+					searchers.fScore[neighborIndex] = ng + neighborDistance;
 
-					if (nodes.searchId[neighborIndex] != currentId) {
-						nodes.searchId[neighborIndex] = currentId;
-						pushHeap(neighbor);
+					if (searchers.searchId[neighborIndex] != heap.currentId) {
+						searchers.searchId[neighborIndex] = heap.currentId;
+						heap.push(neighbor, searchers);
 					} else {
-						if (nodes.heapIndex[neighborIndex] != -1) {
-							fetchUpper(nodes.heapIndex[neighborIndex]);
+						if (searchers.heapIndex[neighborIndex] != -1) {
+							heap.fetchUpper(searchers.heapIndex[neighborIndex], searchers);
 						}
 					}
 				}
@@ -367,7 +509,7 @@ class Pathfinder {
 		}
 
 		if (mode == ClosestPossible && bestClosest != NodeHandle.INVALID) {
-			backtrack(path, bestClosest);
+			backtrack(searchers, path, bestClosest);
 		}
 	}
 
@@ -380,87 +522,14 @@ class Pathfinder {
 		return Math.sqrt(dx * dx + dy * dy + dz * dz);
 	}
 
-	inline function backtrack(path:Path, end:NodeHandle):Void {
+	inline function backtrack(searchers:StructOfVectors<Searcher>, path:Path, end:NodeHandle):Void {
 		var current = end;
 		while (current != NodeHandle.INVALID && path.length < path.nodes.length) {
 			var currentIndex = current.index;
-			// if (current.generation != nodes.generation[currentIndex]) {
-			// 	break;
-			// }
-
 			path.nodes[path.length++] = current;
-			current = nodes.parent[currentIndex];
+			current = searchers.parent[currentIndex];
 		}
 		path.version++;
-	}
-
-	inline function pushHeap(node:NodeHandle):Void {
-		var heapIndex = heapSize++;
-		heap[heapIndex] = node;
-		nodes.heapIndex[node.index] = heapIndex;
-		fetchUpper(heapIndex);
-	}
-
-	inline function popHeap():NodeHandle {
-		var top = heap[0];
-		nodes.heapIndex[top.index] = -1;
-		heapSize--;
-		if (heapSize > 0) {
-			heap[0] = heap[heapSize];
-			nodes.heapIndex[heap[0].index] = 0;
-			fetchBottom(0);
-		}
-		return top;
-	}
-
-	inline function fetchUpper(heapIndex:Int):Void {
-		var node = heap[heapIndex];
-		var nodeIndex = node.index;
-		while (heapIndex > 0) {
-			var parentNodeHeapIndex = (heapIndex - 1) >> 1;
-			var parentNode = heap[parentNodeHeapIndex];
-			var parentNodeIndex = parentNode.index;
-			if (nodes.fScore[nodeIndex] < nodes.fScore[parentNodeIndex]) {
-				heap[heapIndex] = parentNode;
-				nodes.heapIndex[parentNodeIndex] = heapIndex;
-				heapIndex = parentNodeHeapIndex;
-			} else {
-				break;
-			}
-		}
-
-		heap[heapIndex] = node;
-		nodes.heapIndex[nodeIndex] = heapIndex;
-	}
-
-	inline function fetchBottom(heapIndex:Int):Void {
-		var node = heap[heapIndex];
-		var nodeIndex = node.index;
-		var f = nodes.fScore[nodeIndex];
-		while (true) {
-			var left = (heapIndex << 1) + 1;
-			if (left >= heapSize) {
-				break;
-			}
-
-			var right = left + 1;
-			var smallest = left;
-			if (right < heapSize && nodes.fScore[heap[right].index] < nodes.fScore[heap[left].index]) {
-				smallest = right;
-			}
-
-			var childNode = heap[smallest];
-			var childNodeIndex = childNode.index;
-			if (nodes.fScore[childNodeIndex] < f) {
-				heap[heapIndex] = childNode;
-				nodes.heapIndex[childNodeIndex] = heapIndex;
-				heapIndex = smallest;
-			} else {
-				break;
-			}
-		}
-		heap[heapIndex] = node;
-		nodes.heapIndex[nodeIndex] = heapIndex;
 	}
 
 	public function queryNearestNode(x:Float, y:Float, z:Float, flags:Int, maxRadius:Float = 1e38):NodeHandle {
@@ -496,12 +565,68 @@ class Pathfinder {
 		return best;
 	}
 
-	public inline function findPath(path:Path, mode:PathMode, flags:Int, sx:Float, sy:Float, sz:Float, dx:Float, dy:Float, dz:Float):Void {
-		var start = queryNearestNode(sx, sy, sz, flags);
-		var end = queryNearestNode(dx, dy, dz, flags);
+	public inline function findPath(path:Path, mode:PathMode, flags:Int, sX:Float, sY:Float, sZ:Float, dX:Float, dY:Float, dZ:Float):Void {
+		var start = queryNearestNode(sX, sY, sZ, flags);
+		var end = queryNearestNode(dX, dY, dZ, flags);
 		if (start == NodeHandle.INVALID || end == NodeHandle.INVALID) {
 			return;
 		}
-		track(path, mode, flags, start, end);
+		track(localSearchers, localHeap, path, mode, flags, start, end);
 	}
+
+	#if sys
+	public function requestPath(callback:() -> Void, path:Path, mode:PathMode, flags:Int, sX:Float, sY:Float, sZ:Float, dX:Float, dY:Float, dZ:Float):Bool {
+		var l = locked.load();
+		if (!l) {
+			requests.push(callback, path, mode, flags, sX, sY, sZ, dX, dY, dZ);
+		}
+		return !l;
+	}
+
+	public extern inline overload function processRequests(thread:sys.thread.Thread):Void {
+		if (locked.load()) {
+			return;
+		}
+
+		var maxNodes = nodes.length;
+		locked.store(true);
+		thread.events.run(() -> {
+			for (i in 0...requests.length) {
+				var start = queryNearestNode(requests.sX[i], requests.sY[i], requests.sZ[i], requests.flags[i]);
+				var end = queryNearestNode(requests.dX[i], requests.dY[i], requests.dZ[i], requests.flags[i]);
+				if (start == NodeHandle.INVALID || end == NodeHandle.INVALID) {
+					return;
+				}
+				track(threadSearchers, threadHeap, requests.path[i], requests.mode[i], requests.flags[i], start, end);
+				haxe.MainLoop.runInMainThread(requests.callback[i]);
+			}
+			haxe.MainLoop.runInMainThread(applyPendingChanges);
+			requests.clear();
+			locked.store(false);
+		});
+	}
+
+	public extern inline overload function processRequests(threadPool:sys.thread.IThreadPool):Void {
+		if (locked.load()) {
+			return;
+		}
+
+		var maxNodes = nodes.capacity;
+		locked.store(true);
+		threadPool.run(() -> {
+			for (i in 0...requests.length) {
+				var start = queryNearestNode(requests.sX[i], requests.sY[i], requests.sZ[i], requests.flags[i]);
+				var end = queryNearestNode(requests.dX[i], requests.dY[i], requests.dZ[i], requests.flags[i]);
+				if (start == NodeHandle.INVALID || end == NodeHandle.INVALID) {
+					return;
+				}
+				track(threadSearchers, threadHeap, requests.path[i], requests.mode[i], requests.flags[i], start, end);
+				haxe.MainLoop.runInMainThread(requests.callback[i]);
+			}
+			haxe.MainLoop.runInMainThread(applyPendingChanges);
+			requests.clear();
+			locked.store(false);
+		});
+	}
+	#end
 }
