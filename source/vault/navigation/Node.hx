@@ -1,4 +1,4 @@
-package vault.experimental.navigation;
+package vault.navigation;
 
 class Node {
 	public var x:Float = Math.NaN;

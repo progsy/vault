@@ -1,4 +1,4 @@
-package vault.experimental.navigation;
+package vault.navigation;
 
 enum abstract PathMode(Int) {
 	var Normal = 1;
@@ -126,7 +126,7 @@ private class Heap {
 	}
 }
 
-@:access(vault.experimental.navigation)
+@:access(vault.navigation)
 class Pathfinder {
 	public static var spatialMapCellInvSize:Float = 1 / 2.5;
 

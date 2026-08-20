@@ -1,4 +1,4 @@
-package vault.experimental.navigation;
+package vault.navigation;
 
 private class Vector {
 	public var x:Float;
@@ -12,7 +12,7 @@ private class Vector {
 	}
 }
 
-@:access(vault.experimental.navigation)
+@:access(vault.navigation)
 class Path {
 	public var length(default, null):Int;
 	public var pathfinder(default, null):Pathfinder;

@@ -1,4 +1,4 @@
-package vault.experimental.navigation;
+package vault.navigation;
 
 abstract NodeHandle(Int) {
 	public static final INVALID = new NodeHandle(0xFFFF, 0xFFFF);

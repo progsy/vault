@@ -1,4 +1,4 @@
-package vault.experimental.navigation;
+package vault.navigation;
 
 enum abstract UpdateResult(Int) {
 	var OnGoing = 1;
