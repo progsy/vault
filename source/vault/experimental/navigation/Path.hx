@@ -1,5 +1,17 @@
 package vault.experimental.navigation;
 
+private class Vector {
+	public var x:Float;
+	public var y:Float;
+	public var z:Float;
+
+	public inline function new(x:Float = 0.0, y:Float = 0.0, z:Float = 0.0) {
+		this.x = x;
+		this.y = y;
+		this.z = z;
+	}
+}
+
 @:access(vault.experimental.navigation)
 class Path {
 	public var length(default, null):Int;
@@ -7,9 +19,7 @@ class Path {
 	public var version(default, null):Int;
 	public var smoothed(default, null):Bool;
 
-	#if (heaps || hxmath)
-	var smoothPositions:StructOfVectors< #if heaps h3d.Vector #else hxmath.math.Vector3 #end>;
-	#end
+	var smoothPositions:StructOfVectors<Vector>;
 	var nodes:haxe.ds.Vector<NodeHandle>;
 
 	public function new(capacity:Int) {
@@ -17,15 +27,15 @@ class Path {
 			throw 'Capacity must not be less than 1';
 		}
 		nodes = new haxe.ds.Vector(capacity);
-		#if heaps
-		smoothPositions = new StructOfVectors<h3d.Vector>(capacity);
-		#end
+		smoothPositions = new StructOfVectors<Vector>(capacity);
 	}
 
 	public function smooth(smoothFactor:Float = 0.5):Bool {
-		#if (heaps || hxmath)
 		if (length < 1 || smoothed) {
 			return false;
+		}
+		inline function lerp(a:Float, b:Float, k:Float):Float {
+			return a + k * (b - a);
 		}
 		var firstNode = nodes[0];
 		var firstNodeIndex = firstNode.index;
@@ -44,39 +54,14 @@ class Path {
 			var nextNodeIndex = nextNode.index;
 			var previousNode = nodes[i - 1];
 			var previousNodeIndex = previousNode.index;
-			var point = new
-				#if heaps
-				h3d.Vector
-				#else
-				hxmath.math.Vector3
-				#end(pathfinder.nodes.x[currentNodeIndex], pathfinder.nodes.y[currentNodeIndex], pathfinder.nodes.z[currentNodeIndex]);
-			var nextPoint = new
-				#if heaps
-				h3d.Vector
-				#else
-				hxmath.math.Vector3
-				#end(pathfinder.nodes.x[nextNodeIndex], pathfinder.nodes.y[nextNodeIndex], pathfinder.nodes.z[nextNodeIndex]);
-			var previousPoint = new
-				#if heaps
-				h3d.Vector
-				#else
-				hxmath.math.Vector3
-				#end(pathfinder.nodes.x[previousNodeIndex], pathfinder.nodes.y[previousNodeIndex], pathfinder.nodes.z[previousNodeIndex]);
-			var midPoint = new
-				#if heaps
-				h3d.Vector
-				#else
-				hxmath.math.Vector3
-				#end();
-			midPoint.lerp(previousPoint, nextPoint, 0.5);
-			point.lerp(point, midPoint, smoothFactor);
-			smoothPositions.x[i] = point.x;
-			smoothPositions.y[i] = point.y;
-			smoothPositions.z[i] = point.z;
+			var point = new Vector(pathfinder.nodes.x[currentNodeIndex], pathfinder.nodes.y[currentNodeIndex], pathfinder.nodes.z[currentNodeIndex]);
+			var nextPoint = new Vector(pathfinder.nodes.x[nextNodeIndex], pathfinder.nodes.y[nextNodeIndex], pathfinder.nodes.z[nextNodeIndex]);
+			var previousPoint = new Vector(pathfinder.nodes.x[previousNodeIndex], pathfinder.nodes.y[previousNodeIndex], pathfinder.nodes.z[previousNodeIndex]);
+			smoothPositions.x[i] = point.x = lerp(point.x, lerp(previousPoint.x, nextPoint.x, 0.5), smoothFactor);
+			smoothPositions.y[i] = point.y = lerp(point.y, lerp(previousPoint.y, nextPoint.y, 0.5), smoothFactor);
+			smoothPositions.z[i] = point.z = lerp(point.z, lerp(previousPoint.z, nextPoint.z, 0.5), smoothFactor);
 		}
 		return smoothed = true;
-		#end
-		return false;
 	}
 
 	public inline function getNode(offset:Int = 0):Node {
@@ -87,7 +72,6 @@ class Path {
 			var nodeIndex = nodeHandle.index;
 			var nodeGeneration = nodeHandle.generation;
 			if (!pathfinder.nodes.freed[nodeIndex] && pathfinder.nodes.generation[nodeIndex] == nodeGeneration) {
-				#if heaps
 				if (smoothed) {
 					node.x = smoothPositions.x[localIndex];
 					node.y = smoothPositions.y[localIndex];
@@ -97,11 +81,6 @@ class Path {
 					node.y = pathfinder.nodes.y[nodeIndex];
 					node.z = pathfinder.nodes.z[nodeIndex];
 				}
-				#else
-				node.x = pathfinder.nodes.x[nodeIndex];
-				node.y = pathfinder.nodes.y[nodeIndex];
-				node.z = pathfinder.nodes.z[nodeIndex];
-				#end
 				node.flags = pathfinder.nodes.flags[nodeIndex];
 				node.weight = pathfinder.nodes.weight[nodeIndex];
 				node.connectionCount = pathfinder.nodes.connectionCount[nodeIndex];
