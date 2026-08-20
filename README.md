@@ -177,7 +177,7 @@ class MovementSystem implements vault.behavior.System {
         }
     }
 
-    // Runs every 5 major exections.
+    // Runs every 5 major executions.
     @:update(5) function expensiveMidUpdate(dt:Float) {
         // Do stuff...
     }
@@ -192,6 +192,3 @@ var unit = system.createUnit();
 // Later when you no longer need this unit:
 system.destroyUnit(unit);
 ```
-
-## Experimental
-Experimental features are available in the experimental package. Those features HAVE NOT been polished yet and MIGHT NOT work as expected. Please don't use them in production. 
