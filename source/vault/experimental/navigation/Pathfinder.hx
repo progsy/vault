@@ -26,6 +26,8 @@ private class SearchData {
 
 @:access(vault.experimental.navigation)
 class Pathfinder {
+	public static var spatialMapCellInvSize:Float = 1 / 2.5;
+
 	public var connectionsPerNode(default, null):Int;
 
 	var nodes:vault.data.StructOfVectors<Node, ValidationData, SearchData>;
@@ -33,6 +35,14 @@ class Pathfinder {
 	var currentId:Int;
 	var heap:Array<NodeHandle> = [];
 	var heapSize:Int;
+	var spatialMap:Map<Int, Array<NodeHandle>> = [];
+
+	static inline function hash(x:Float, y:Float, z:Float) {
+		var ix = Std.int(x * spatialMapCellInvSize);
+		var iy = Std.int(y * spatialMapCellInvSize);
+		var iz = Std.int(z * spatialMapCellInvSize);
+		return (ix << 20) | (iy << 8) | (iz);
+	}
 
 	public inline function new(maxNodes:Int, connectionsPerNode:Int = 12) {
 		nodes = new vault.data.StructOfVectors<Node, ValidationData, SearchData>(maxNodes);
@@ -46,11 +56,19 @@ class Pathfinder {
 
 	public function createNode(x:Float, y:Float, z:Float, flags:Int, weight:Float):NodeHandle {
 		var node:NodeHandle = NodeHandle.INVALID;
-		if (nodes.length + 1 < 0xFFFF) {
+		if (nodes.length + 1 < node.index) {
 			var index = nodes.push(x, y, z, flags, weight);
 			node.index = index;
 			node.generation = ++nodes.generation[index];
 			nodes.freed[index] = false;
+
+			var key = hash(x, y, z);
+			var cell = spatialMap.get(key);
+			if (cell == null) {
+				cell = [];
+				spatialMap.set(key, cell);
+			}
+			cell.push(node);
 		}
 		return node;
 	}
@@ -66,6 +84,15 @@ class Pathfinder {
 
 		nodes.removeAt(nodeIndex);
 		nodes.freed[nodeIndex] = true;
+
+		var key = hash(nodes.x[nodeIndex], nodes.x[nodeIndex], nodes.x[nodeIndex]);
+		var cell = spatialMap.get(key);
+		if (cell != null) {
+			var targetIndex = cell.indexOf(node);
+			if (cell.length > 0 && targetIndex != -1) {
+				cell[targetIndex] = cell.pop();
+			}
+		}
 		return true;
 	}
 
@@ -245,6 +272,9 @@ class Pathfinder {
 			nodes.closedId[i] = -1;
 			nodes.heapIndex[i] = -1;
 		}
+		for (cell in spatialMap) {
+			cell.resize(0);
+		}
 		currentId = 0;
 		heapSize = 0;
 	}
@@ -264,6 +294,7 @@ class Pathfinder {
 
 		path.clear();
 		path.pathfinder = this;
+		path.smoothed = false;
 
 		if (start == end) {
 			path.nodes[path.length++] = start;
@@ -285,7 +316,7 @@ class Pathfinder {
 			var current = popHeap();
 			var currentIndex = current.index;
 			var currentGeneration = current.generation;
-			if (nodes.freed[currentIndex] || currentGeneration != nodes.generation[currentIndex]) {
+			if (currentGeneration != nodes.generation[currentIndex]) {
 				continue;
 			}
 
@@ -322,6 +353,7 @@ class Pathfinder {
 					nodes.parent[neighborIndex] = current;
 					nodes.gScore[neighborIndex] = ng;
 					nodes.fScore[neighborIndex] = ng + neighborDistance;
+
 					if (nodes.searchId[neighborIndex] != currentId) {
 						nodes.searchId[neighborIndex] = currentId;
 						pushHeap(neighbor);
@@ -434,19 +466,31 @@ class Pathfinder {
 	public function queryNearestNode(x:Float, y:Float, z:Float, flags:Int, maxRadius:Float = 1e38):NodeHandle {
 		var best = NodeHandle.INVALID;
 		var bestDistance = maxRadius * maxRadius;
-		for (i in 0...nodes.length) {
-			if (nodes.flags[i] & flags == 0) {
-				continue;
-			}
+		var key = hash(x, y, z);
+		var cell = spatialMap.get(key);
 
-			var dx = nodes.x[i] - x;
-			var dy = nodes.y[i] - y;
-			var dz = nodes.z[i] - z;
-			var distance = dx * dx + dy * dy + dz * dz;
-			if (distance < bestDistance) {
-				bestDistance = distance;
-				best.index = i;
-				best.generation = nodes.generation[i];
+		inline function process(index:Int) {
+			if (nodes.flags[index] & flags != 0) {
+				var dx = nodes.x[index] - x;
+				var dy = nodes.y[index] - y;
+				var dz = nodes.z[index] - z;
+				var distance = dx * dx + dy * dy + dz * dz;
+				if (distance < bestDistance) {
+					bestDistance = distance;
+					best.index = index;
+					best.generation = nodes.generation[index];
+				}
+			}
+		}
+
+		if (cell != null) {
+			for (node in cell) {
+				process(node.index);
+			}
+		}
+		if (best == NodeHandle.INVALID) {
+			for (i in 0...nodes.length) {
+				process(i);
 			}
 		}
 		return best;
