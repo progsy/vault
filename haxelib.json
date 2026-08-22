@@ -3,7 +3,7 @@
 	"url": "https://github.com/progsy/vault",
 	"license": "MIT",
 	"description": "Fundamental engine-agnostic library for game development",
-	"version": "1.4.0",
+	"version": "1.4.1",
 	"releasenote": "",
 	"contributors": [
 		"progsy"
