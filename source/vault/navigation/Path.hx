@@ -17,22 +17,39 @@ class Path {
 	public var length(default, null):Int;
 	public var pathfinder(default, null):Pathfinder;
 	public var version(default, null):Int;
+	public var smoothingAllowed(get, never):Bool;
 	public var smoothed(default, null):Bool;
+
+	inline function get_smoothingAllowed() {
+		return smoothPositions != null;
+	}
 
 	var smoothPositions:StructOfVectors<Vector>;
 	var nodes:haxe.ds.Vector<NodeHandle>;
+	var distances:haxe.ds.Vector<Float>;
+	#if sys
+	var back:Path;
+	#end
 
-	public function new(capacity:Int) {
+	public function new(capacity:Int, allowSmoothing:Bool = true #if sys, allowBack:Bool = true #end) {
 		if (capacity < 1) {
 			throw 'Capacity must not be less than 1';
 		}
 		nodes = new haxe.ds.Vector(capacity);
-		smoothPositions = new StructOfVectors<Vector>(capacity);
+		distances = new haxe.ds.Vector(capacity);
+		if (allowSmoothing) {
+			smoothPositions = new StructOfVectors<Vector>(capacity);
+		}
+		#if sys
+		if (allowBack) {
+			back = new Path(capacity, false, false);
+		}
+		#end
 	}
 
-	public function smooth(smoothFactor:Float = 0.5):Bool {
-		if (length < 1 || smoothed) {
-			return false;
+	public function smooth(smoothFactor:Float = 0.5):Void {
+		if (length == 0 || smoothed || !smoothingAllowed) {
+			return;
 		}
 		inline function lerp(a:Float, b:Float, k:Float):Float {
 			return a + k * (b - a);
@@ -61,7 +78,7 @@ class Path {
 			smoothPositions.y[i] = point.y = lerp(point.y, lerp(previousPoint.y, nextPoint.y, 0.5), smoothFactor);
 			smoothPositions.z[i] = point.z = lerp(point.z, lerp(previousPoint.z, nextPoint.z, 0.5), smoothFactor);
 		}
-		return smoothed = true;
+		return;
 	}
 
 	public inline function getNode(offset:Int = 0):Node {
@@ -93,43 +110,24 @@ class Path {
 		length = 0;
 	}
 
-	public inline function calculateTotalDistance():Float {
-		if (nodes.length <= 1) {
-			return 0.0;
+	#if sys
+	public function sync() {
+		for (i in 0...back.length) {
+			nodes[i] = back.nodes[i];
+			distances[i] = back.distances[i];
 		}
-
-		var d = 0.0;
-		for (i in 0...nodes.length - 1) {
-			var currentNode = nodes[i];
-			var currentNodeIndex = currentNode.index;
-			var nextNode = nodes[i + 1];
-			var nextNodeIndex = nextNode.index;
-			var dx = pathfinder.nodes.x[currentNodeIndex] - pathfinder.nodes.x[nextNodeIndex];
-			var dy = pathfinder.nodes.y[currentNodeIndex] - pathfinder.nodes.y[nextNodeIndex];
-			var dz = pathfinder.nodes.z[currentNodeIndex] - pathfinder.nodes.z[nextNodeIndex];
-			d += Math.sqrt(dx * dx + dy * dy + dz * dz);
-		}
-
-		return d;
+		length = back.length;
+		version = back.version;
+		pathfinder = back.pathfinder;
+		smoothed = back.smoothed;
 	}
+	#end
 
-	public inline function calculateTotalDistanceSq():Float {
-		if (nodes.length <= 1) {
-			return 0.0;
-		}
-
+	public inline function getDistance(nodeOffset:Int = 0):Float {
 		var d = 0.0;
-		for (i in 0...nodes.length - 1) {
-			var currentNode = nodes[i];
-			var currentNodeIndex = currentNode.index;
-			var nextNode = nodes[i + 1];
-			var nextNodeIndex = nextNode.index;
-			var dx = pathfinder.nodes.x[currentNodeIndex] - pathfinder.nodes.x[nextNodeIndex];
-			var dy = pathfinder.nodes.y[currentNodeIndex] - pathfinder.nodes.y[nextNodeIndex];
-			var dz = pathfinder.nodes.z[currentNodeIndex] - pathfinder.nodes.z[nextNodeIndex];
-			d += dx * dx + dy * dy + dz * dz;
+		for (i in 0...Std.int(Math.max(nodes.length - nodeOffset, 0))) {
+			d += distances[i];
 		}
-
 		return d;
 	}
 }

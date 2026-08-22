@@ -18,19 +18,20 @@ private class ValidationData {
 private class Searcher {
 	@:ignore public var gScore:Float;
 	@:ignore public var fScore:Float;
+	@:ignore public var distance:Float;
 	@:ignore public var parent:NodeHandle;
 	@:ignore public var searchId:Int = -1;
 	@:ignore public var closedId:Int = -1;
 	@:ignore public var heapIndex:Int = -1;
 }
 
-private class PendingChange {
+class NodeUpdateRequest {
 	public var node:NodeHandle;
 	public var flags:Int;
 	public var weight:Float;
 }
 
-private class Request {
+class PathRequest {
 	public var callback:() -> Void;
 	public var path:Path;
 	public var mode:PathMode;
@@ -131,19 +132,17 @@ class Pathfinder {
 	public static var spatialMapCellInvSize:Float = 1 / 2.5;
 
 	public var connectionsPerNode(default, null):Int;
-	#if sys
-	public var locked(default, null):haxe.atomic.AtomicBool = new haxe.atomic.AtomicBool(false);
-	#end
+	public var locked(default, null):Bool;
 
 	var nodes:StructOfVectors<Node, ValidationData>;
-	var pendingChanges:StructOfVectors<PendingChange>;
 	var connections:StructOfVectors<ConnectionData>;
 	var localSearchers:StructOfVectors<Searcher>;
 	var localHeap:Heap;
 	#if sys
+	var nodeUpdateRequestQueue:StructOfVectors<NodeUpdateRequest>;
+	var pathRequestQueue:PathRequestQueue;
 	var threadSearchers:StructOfVectors<Searcher>;
 	var threadHeap:Heap;
-	var requests:StructOfVectors<Request>;
 	#end
 	var spatialMap:Map<Int, Array<NodeHandle>> = [];
 
@@ -154,17 +153,18 @@ class Pathfinder {
 		return (ix << 20) | (iy << 8) | (iz);
 	}
 
-	public inline function new(maxNodes:Int, connectionsPerNode:Int = 12) {
+	public inline function new(maxNodes:Int, connectionsPerNode:Int = 12,
+			#if sys pathRequestQueueCapacity:Int = 128, nodeUpdateRequestQueueCapacity:Int = 1024 #end) {
 		this.connectionsPerNode = connectionsPerNode;
 		connections = new StructOfVectors<ConnectionData>(maxNodes * connectionsPerNode);
 		nodes = new StructOfVectors<Node, ValidationData>(maxNodes);
-		pendingChanges = new StructOfVectors<PendingChange>(maxNodes);
 		localSearchers = new StructOfVectors<Searcher>(maxNodes);
 		localHeap = new Heap(maxNodes);
 		#if sys
+		pathRequestQueue = new PathRequestQueue(pathRequestQueueCapacity);
+		nodeUpdateRequestQueue = new NodeUpdateRequestQueue(nodeUpdateRequestQueueCapacity);
 		threadSearchers = new StructOfVectors<Searcher>(maxNodes);
 		threadHeap = new Heap(maxNodes);
-		requests = new StructOfVectors<Request>(32);
 		#end
 	}
 
@@ -174,7 +174,7 @@ class Pathfinder {
 
 	public function createNode(x:Float, y:Float, z:Float, flags:Int, weight:Float):NodeHandle {
 		var node:NodeHandle = NodeHandle.INVALID;
-		if (locked.load() || nodes.length + 1 >= node.index) {
+		if (locked || nodes.length + 1 >= node.index) {
 			return node;
 		}
 
@@ -195,7 +195,7 @@ class Pathfinder {
 
 	public function destroyNode(node:NodeHandle):Bool {
 		var nodeIndex = node.index;
-		if (locked.load() || node == NodeHandle.INVALID || node.generation != nodes.generation[nodeIndex]) {
+		if (locked || node == NodeHandle.INVALID || node.generation != nodes.generation[nodeIndex]) {
 			return false;
 		}
 
@@ -216,7 +216,7 @@ class Pathfinder {
 	public function connectNodes(nodeA:NodeHandle, nodeB:NodeHandle):Void {
 		var nodeAIndex = nodeA.index;
 		var nodeBIndex = nodeB.index;
-		if (locked.load() || nodeA == NodeHandle.INVALID || nodeB == NodeHandle.INVALID) {
+		if (locked || nodeA == NodeHandle.INVALID || nodeB == NodeHandle.INVALID) {
 			return;
 		}
 		if (nodes.freed[nodeAIndex]
@@ -238,7 +238,7 @@ class Pathfinder {
 	public function disconnectNodes(nodeA:NodeHandle, nodeB:NodeHandle):Void {
 		var nodeAIndex = nodeA.index;
 		var nodeBIndex = nodeB.index;
-		if (locked.load() || nodeA == NodeHandle.INVALID || nodeB == NodeHandle.INVALID) {
+		if (locked || nodeA == NodeHandle.INVALID || nodeB == NodeHandle.INVALID) {
 			return;
 		}
 		if (nodes.freed[nodeAIndex]
@@ -288,11 +288,7 @@ class Pathfinder {
 		if (node != NodeHandle.INVALID) {
 			var nodeIndex = node.index;
 			if (!nodes.freed[nodeIndex] && node.generation == nodes.generation[nodeIndex]) {
-				if (!locked.load()) {
-					nodes.flags[nodeIndex] = flags;
-				} else {
-					pendingChanges.push(node, flags, nodes.weight[nodeIndex]);
-				}
+				nodes.flags[nodeIndex] = flags;
 			}
 		}
 	}
@@ -312,11 +308,7 @@ class Pathfinder {
 		var nodeIndex = node.index;
 		if (node != NodeHandle.INVALID) {
 			if (!nodes.freed[nodeIndex] && node.generation == nodes.generation[nodeIndex]) {
-				if (!locked.load()) {
-					nodes.weight[nodeIndex] = weight;
-				} else {
-					pendingChanges.push(node, nodes.flags[nodeIndex], weight);
-				}
+				nodes.weight[nodeIndex] = weight;
 			}
 		}
 	}
@@ -402,23 +394,6 @@ class Pathfinder {
 		for (cell in spatialMap) {
 			cell.resize(0);
 		}
-		@:privateAccess {
-			localHeap.currentId = 0;
-			localHeap.length = 0;
-		}
-	}
-
-	function applyPendingChanges():Void {
-		for (i in 0...pendingChanges.length) {
-			var node = pendingChanges.node[i];
-			var nodeIndex = node.index;
-			var nodeGeneration = node.generation;
-			if (!nodes.freed[nodeIndex] && nodeGeneration == nodes.generation[nodeIndex]) {
-				nodes.flags[nodeIndex] = pendingChanges.flags[i];
-				nodes.weight[nodeIndex] = pendingChanges.weight[i];
-			}
-		}
-		pendingChanges.clear();
 	}
 
 	function track(searchers:StructOfVectors<Searcher>, heap:Heap, path:Path, mode:PathMode, flags:Int, start:NodeHandle, end:NodeHandle):Void {
@@ -436,7 +411,6 @@ class Pathfinder {
 
 		path.clear();
 		path.pathfinder = this;
-		path.smoothed = false;
 
 		if (start == end) {
 			path.nodes[path.length++] = start;
@@ -495,6 +469,7 @@ class Pathfinder {
 					searchers.parent[neighborIndex] = current;
 					searchers.gScore[neighborIndex] = ng;
 					searchers.fScore[neighborIndex] = ng + neighborDistance;
+					searchers.distance[neighborIndex] = neighborDistance;
 
 					if (searchers.searchId[neighborIndex] != heap.currentId) {
 						searchers.searchId[neighborIndex] = heap.currentId;
@@ -526,13 +501,15 @@ class Pathfinder {
 		var current = end;
 		while (current != NodeHandle.INVALID && path.length < path.nodes.length) {
 			var currentIndex = current.index;
+			path.distances[path.length] = searchers.distance[currentIndex];
 			path.nodes[path.length++] = current;
 			current = searchers.parent[currentIndex];
 		}
+		path.distances[path.length - 1] = 0.0;
 		path.version++;
 	}
 
-	public function queryNearestNode(x:Float, y:Float, z:Float, flags:Int, maxRadius:Float = 1e38):NodeHandle {
+	public function getNearestNode(x:Float, y:Float, z:Float, flags:Int, maxRadius:Float = 1e38):NodeHandle {
 		var best = NodeHandle.INVALID;
 		var bestDistance = maxRadius * maxRadius;
 		var key = hash(x, y, z);
@@ -566,67 +543,168 @@ class Pathfinder {
 	}
 
 	public inline function findPath(path:Path, mode:PathMode, flags:Int, sX:Float, sY:Float, sZ:Float, dX:Float, dY:Float, dZ:Float):Void {
-		var start = queryNearestNode(sX, sY, sZ, flags);
-		var end = queryNearestNode(dX, dY, dZ, flags);
+		var start = getNearestNode(sX, sY, sZ, flags);
+		var end = getNearestNode(dX, dY, dZ, flags);
 		if (start == NodeHandle.INVALID || end == NodeHandle.INVALID) {
 			return;
 		}
 		track(localSearchers, localHeap, path, mode, flags, start, end);
 	}
 
+	#if sys @:deprecated('You should be flushing the queues to a thread. This function is only meant for compatibility with non sys targets.') #end
+	public #if sys extern inline overload #end function flush(pathRequestQueue:PathRequestQueue, nodeUpdateRequestQueue:NodeUpdateRequestQueue):Bool {
+		if (pathRequestQueue.length == 0 || locked) {
+			return false;
+		}
+
+		locked = true;
+		var oldPathRequestQueue = pathRequestQueue;
+		var oldNodeUpdateRequestQueue = nodeUpdateRequestQueue;
+		pathRequestQueue = this.pathRequestQueue;
+		nodeUpdateRequestQueue = this.nodeUpdateRequestQueue;
+		this.pathRequestQueue = oldPathRequestQueue;
+		this.nodeUpdateRequestQueue = oldNodeUpdateRequestQueue;
+
+		for (i in 0...this.nodeUpdateRequestQueue.length) {
+			var node = this.nodeUpdateRequestQueue.node[i];
+			var nodeIndex = node.index;
+			var nodeGeneration = node.generation;
+			if (!nodes.freed[nodeIndex] && nodeGeneration == nodes.generation[nodeIndex]) {
+				nodes.flags[nodeIndex] = this.nodeUpdateRequestQueue.flags[i];
+				nodes.weight[nodeIndex] = this.nodeUpdateRequestQueue.weight[i];
+			}
+		}
+		this.nodeUpdateRequestQueue.clear();
+
+		for (i in 0...this.pathRequestQueue.length) {
+			var start = getNearestNode(this.pathRequestQueue.sX[i], this.pathRequestQueue.sY[i], this.pathRequestQueue.sZ[i], this.pathRequestQueue.flags[i]);
+			var end = getNearestNode(this.pathRequestQueue.dX[i], this.pathRequestQueue.dY[i], this.pathRequestQueue.dZ[i], this.pathRequestQueue.flags[i]);
+			if (start == NodeHandle.INVALID || end == NodeHandle.INVALID) {
+				continue;
+			}
+			track(threadSearchers, threadHeap, this.pathRequestQueue.path[i].back, this.pathRequestQueue.mode[i], this.pathRequestQueue.flags[i], start, end);
+		}
+		for (i in 0...this.pathRequestQueue.length) {
+			this.pathRequestQueue.path[i].sync();
+			this.pathRequestQueue.callback[i]();
+		}
+
+		this.pathRequestQueue.clear();
+		locked = false;
+		return true;
+	}
+
 	#if sys
-	public function requestPath(callback:() -> Void, path:Path, mode:PathMode, flags:Int, sX:Float, sY:Float, sZ:Float, dX:Float, dY:Float, dZ:Float):Bool {
-		var l = locked.load();
-		if (!l) {
-			requests.push(callback, path, mode, flags, sX, sY, sZ, dX, dY, dZ);
-		}
-		return !l;
-	}
-
-	public extern inline overload function processRequests(thread:sys.thread.Thread):Void {
-		if (locked.load()) {
-			return;
+	public extern inline overload function flush(thread:sys.thread.Thread, pathRequestQueue:PathRequestQueue,
+			nodeUpdateRequestQueue:NodeUpdateRequestQueue):Bool {
+		if (pathRequestQueue.length == 0 || locked) {
+			return false;
 		}
 
-		var maxNodes = nodes.length;
-		locked.store(true);
+		var callingThread = sys.thread.Thread.current();
+		locked = true;
 		thread.events.run(() -> {
-			for (i in 0...requests.length) {
-				var start = queryNearestNode(requests.sX[i], requests.sY[i], requests.sZ[i], requests.flags[i]);
-				var end = queryNearestNode(requests.dX[i], requests.dY[i], requests.dZ[i], requests.flags[i]);
-				if (start == NodeHandle.INVALID || end == NodeHandle.INVALID) {
-					return;
+			var mutex = new sys.thread.Mutex();
+			var oldPathRequestQueue = pathRequestQueue;
+			var oldNodeUpdateRequestQueue = nodeUpdateRequestQueue;
+			mutex.acquire();
+			pathRequestQueue = this.pathRequestQueue;
+			nodeUpdateRequestQueue = this.nodeUpdateRequestQueue;
+			this.pathRequestQueue = oldPathRequestQueue;
+			this.nodeUpdateRequestQueue = oldNodeUpdateRequestQueue;
+			mutex.release();
+
+			for (i in 0...this.nodeUpdateRequestQueue.length) {
+				var node = this.nodeUpdateRequestQueue.node[i];
+				var nodeIndex = node.index;
+				var nodeGeneration = node.generation;
+				if (!nodes.freed[nodeIndex] && nodeGeneration == nodes.generation[nodeIndex]) {
+					nodes.flags[nodeIndex] = this.nodeUpdateRequestQueue.flags[i];
+					nodes.weight[nodeIndex] = this.nodeUpdateRequestQueue.weight[i];
 				}
-				track(threadSearchers, threadHeap, requests.path[i], requests.mode[i], requests.flags[i], start, end);
-				haxe.MainLoop.runInMainThread(requests.callback[i]);
 			}
-			haxe.MainLoop.runInMainThread(applyPendingChanges);
-			requests.clear();
-			locked.store(false);
+			this.nodeUpdateRequestQueue.clear();
+
+			for (i in 0...this.pathRequestQueue.length) {
+				var start = getNearestNode(this.pathRequestQueue.sX[i], this.pathRequestQueue.sY[i], this.pathRequestQueue.sZ[i],
+					this.pathRequestQueue.flags[i]);
+				var end = getNearestNode(this.pathRequestQueue.dX[i], this.pathRequestQueue.dY[i], this.pathRequestQueue.dZ[i], this.pathRequestQueue.flags[i]);
+				if (start == NodeHandle.INVALID || end == NodeHandle.INVALID) {
+					continue;
+				}
+				track(threadSearchers, threadHeap, this.pathRequestQueue.path[i].back, this.pathRequestQueue.mode[i], this.pathRequestQueue.flags[i], start,
+					end);
+			}
+
+			callingThread.events.run(() -> {
+				for (i in 0...this.pathRequestQueue.length) {
+					this.pathRequestQueue.path[i].sync();
+					this.pathRequestQueue.callback[i]();
+				}
+				this.pathRequestQueue.clear();
+				var mutex = new sys.thread.Mutex();
+				mutex.acquire();
+				locked = false;
+				mutex.release();
+			});
 		});
+		return true;
 	}
 
-	public extern inline overload function processRequests(threadPool:sys.thread.IThreadPool):Void {
-		if (locked.load()) {
-			return;
+	public extern inline overload function flush(threadPool:sys.thread.IThreadPool, pathRequestQueue:PathRequestQueue,
+			nodeUpdateRequestQueue:NodeUpdateRequestQueue):Bool {
+		if (pathRequestQueue.length == 0 || locked) {
+			return false;
 		}
 
-		var maxNodes = nodes.capacity;
-		locked.store(true);
+		var callingThread = sys.thread.Thread.current();
+		locked = true;
 		threadPool.run(() -> {
-			for (i in 0...requests.length) {
-				var start = queryNearestNode(requests.sX[i], requests.sY[i], requests.sZ[i], requests.flags[i]);
-				var end = queryNearestNode(requests.dX[i], requests.dY[i], requests.dZ[i], requests.flags[i]);
-				if (start == NodeHandle.INVALID || end == NodeHandle.INVALID) {
-					return;
+			var mutex = new sys.thread.Mutex();
+			var oldPathRequestQueue = pathRequestQueue;
+			var oldNodeUpdateRequestQueue = nodeUpdateRequestQueue;
+			mutex.acquire();
+			pathRequestQueue = this.pathRequestQueue;
+			nodeUpdateRequestQueue = this.nodeUpdateRequestQueue;
+			this.pathRequestQueue = oldPathRequestQueue;
+			this.nodeUpdateRequestQueue = oldNodeUpdateRequestQueue;
+			mutex.release();
+
+			for (i in 0...this.nodeUpdateRequestQueue.length) {
+				var node = this.nodeUpdateRequestQueue.node[i];
+				var nodeIndex = node.index;
+				var nodeGeneration = node.generation;
+				if (!nodes.freed[nodeIndex] && nodeGeneration == nodes.generation[nodeIndex]) {
+					nodes.flags[nodeIndex] = this.nodeUpdateRequestQueue.flags[i];
+					nodes.weight[nodeIndex] = this.nodeUpdateRequestQueue.weight[i];
 				}
-				track(threadSearchers, threadHeap, requests.path[i], requests.mode[i], requests.flags[i], start, end);
-				haxe.MainLoop.runInMainThread(requests.callback[i]);
 			}
-			haxe.MainLoop.runInMainThread(applyPendingChanges);
-			requests.clear();
-			locked.store(false);
+			this.nodeUpdateRequestQueue.clear();
+
+			for (i in 0...this.pathRequestQueue.length) {
+				var start = getNearestNode(this.pathRequestQueue.sX[i], this.pathRequestQueue.sY[i], this.pathRequestQueue.sZ[i],
+					this.pathRequestQueue.flags[i]);
+				var end = getNearestNode(this.pathRequestQueue.dX[i], this.pathRequestQueue.dY[i], this.pathRequestQueue.dZ[i], this.pathRequestQueue.flags[i]);
+				if (start == NodeHandle.INVALID || end == NodeHandle.INVALID) {
+					continue;
+				}
+				track(threadSearchers, threadHeap, this.pathRequestQueue.path[i].back, this.pathRequestQueue.mode[i], this.pathRequestQueue.flags[i], start,
+					end);
+			}
+
+			callingThread.events.run(() -> {
+				for (i in 0...this.pathRequestQueue.length) {
+					this.pathRequestQueue.path[i].sync();
+					this.pathRequestQueue.callback[i]();
+				}
+				this.pathRequestQueue.clear();
+				var mutex = new sys.thread.Mutex();
+				mutex.acquire();
+				locked = false;
+				mutex.release();
+			});
 		});
+		return true;
 	}
 	#end
 }
