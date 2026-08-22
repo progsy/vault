@@ -558,38 +558,31 @@ class Pathfinder {
 		}
 
 		locked = true;
-		var oldPathRequestQueue = pathRequestQueue;
-		var oldNodeUpdateRequestQueue = nodeUpdateRequestQueue;
-		pathRequestQueue = this.pathRequestQueue;
-		nodeUpdateRequestQueue = this.nodeUpdateRequestQueue;
-		this.pathRequestQueue = oldPathRequestQueue;
-		this.nodeUpdateRequestQueue = oldNodeUpdateRequestQueue;
-
-		for (i in 0...this.nodeUpdateRequestQueue.length) {
-			var node = this.nodeUpdateRequestQueue.node[i];
+		for (i in 0...nodeUpdateRequestQueue.length) {
+			var node = nodeUpdateRequestQueue.node[i];
 			var nodeIndex = node.index;
 			var nodeGeneration = node.generation;
 			if (!nodes.freed[nodeIndex] && nodeGeneration == nodes.generation[nodeIndex]) {
-				nodes.flags[nodeIndex] = this.nodeUpdateRequestQueue.flags[i];
-				nodes.weight[nodeIndex] = this.nodeUpdateRequestQueue.weight[i];
+				nodes.flags[nodeIndex] = nodeUpdateRequestQueue.flags[i];
+				nodes.weight[nodeIndex] = nodeUpdateRequestQueue.weight[i];
 			}
 		}
-		this.nodeUpdateRequestQueue.clear();
+		nodeUpdateRequestQueue.clear();
 
-		for (i in 0...this.pathRequestQueue.length) {
-			var start = getNearestNode(this.pathRequestQueue.sX[i], this.pathRequestQueue.sY[i], this.pathRequestQueue.sZ[i], this.pathRequestQueue.flags[i]);
-			var end = getNearestNode(this.pathRequestQueue.dX[i], this.pathRequestQueue.dY[i], this.pathRequestQueue.dZ[i], this.pathRequestQueue.flags[i]);
+		for (i in 0...pathRequestQueue.length) {
+			var start = getNearestNode(pathRequestQueue.sX[i], pathRequestQueue.sY[i], pathRequestQueue.sZ[i], pathRequestQueue.flags[i]);
+			var end = getNearestNode(pathRequestQueue.dX[i], pathRequestQueue.dY[i], pathRequestQueue.dZ[i], pathRequestQueue.flags[i]);
 			if (start == NodeHandle.INVALID || end == NodeHandle.INVALID) {
 				continue;
 			}
-			track(threadSearchers, threadHeap, this.pathRequestQueue.path[i].back, this.pathRequestQueue.mode[i], this.pathRequestQueue.flags[i], start, end);
+			track(threadSearchers, threadHeap, pathRequestQueue.path[i].back, pathRequestQueue.mode[i], pathRequestQueue.flags[i], start, end);
 		}
-		for (i in 0...this.pathRequestQueue.length) {
-			this.pathRequestQueue.path[i].sync();
-			this.pathRequestQueue.callback[i]();
+		for (i in 0...pathRequestQueue.length) {
+			pathRequestQueue.path[i].sync();
+			pathRequestQueue.callback[i]();
 		}
 
-		this.pathRequestQueue.clear();
+		pathRequestQueue.clear();
 		locked = false;
 		return true;
 	}
