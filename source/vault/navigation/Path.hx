@@ -47,9 +47,9 @@ class Path {
 		#end
 	}
 
-	public function smooth(smoothFactor:Float = 0.5):Void {
+	public function smooth(smoothFactor:Float = 0.5):Bool {
 		if (length == 0 || smoothed || !smoothingAllowed) {
-			return;
+			return true;
 		}
 		inline function lerp(a:Float, b:Float, k:Float):Float {
 			return a + k * (b - a);
@@ -78,7 +78,7 @@ class Path {
 			smoothPositions.y[i] = point.y = lerp(point.y, lerp(previousPoint.y, nextPoint.y, 0.5), smoothFactor);
 			smoothPositions.z[i] = point.z = lerp(point.z, lerp(previousPoint.z, nextPoint.z, 0.5), smoothFactor);
 		}
-		return;
+		return smoothed = true;
 	}
 
 	public inline function getNode(offset:Int = 0):Node {
