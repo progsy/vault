@@ -75,22 +75,6 @@ class Json {
 					});
 				}
 
-				fields.push({
-					name: "SCHEMA_PATH",
-					access: [APublic, AStatic, AFinal],
-					pos: Context.currentPos(),
-					kind: schemaPaths.length == 1 ? FieldType.FVar(macro :String,
-						macro $v{schemaPaths[0]}) : FieldType.FVar(macro :Array<String>, macro $v{schemaPaths})
-				});
-
-				fields.push({
-					name: "updateSignal",
-					access: [APublic, AFinal],
-					pos: Context.currentPos(),
-					kind: FieldType.FVar(macro :Signal<$complexType>, macro new Signal<$complexType>()),
-					doc: "Called when the properties are updated. Should be emitted manually."
-				});
-
 				var toStringExprs:Array<Expr> = [];
 				for (i in 0...fields.length) {
 					var f = fields[i];
@@ -152,9 +136,6 @@ class Json {
 							[
 								for (f in fields) {
 									var value:Expr;
-									if (f.access.contains(AStatic)) {
-										continue;
-									}
 									switch (f.kind) {
 										case FVar(_, e):
 											value = e;
@@ -207,6 +188,22 @@ class Json {
 						args: [],
 						expr: macro $b{copyExprs}
 					})
+				});
+
+				fields.push({
+					name: "SCHEMA_PATH",
+					access: [APublic, AStatic, AFinal],
+					pos: Context.currentPos(),
+					kind: schemaPaths.length == 1 ? FieldType.FVar(macro :String,
+						macro $v{schemaPaths[0]}) : FieldType.FVar(macro :Array<String>, macro $v{schemaPaths})
+				});
+
+				fields.push({
+					name: "updateSignal",
+					access: [APublic, AFinal],
+					pos: Context.currentPos(),
+					kind: FieldType.FVar(macro :Signal<$complexType>, macro new Signal<$complexType>()),
+					doc: "Called when the properties are updated. Should be emitted manually."
 				});
 
 				Context.defineType({
