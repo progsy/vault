@@ -83,6 +83,14 @@ class Json {
 						macro $v{schemaPaths[0]}) : FieldType.FVar(macro :Array<String>, macro $v{schemaPaths})
 				});
 
+				fields.push({
+					name: "updateSignal",
+					access: [APublic, AFinal],
+					pos: Context.currentPos(),
+					kind: FieldType.FVar(macro :Signal<$complexType>, macro new Signal<$complexType>()),
+					doc: "Called when the properties are updated. Should be emitted manually."
+				});
+
 				var toStringExprs:Array<Expr> = [];
 				for (i in 0...fields.length) {
 					var f = fields[i];
