@@ -38,9 +38,9 @@ class System {
 			var followedComponentType = componentType;
 
 			function submitTypeParameters(type:Type, typeParams:Array<TypeParam>) {
+				typeParams.push(TPType(type.toComplexType()));
 				switch (type) {
 					case TInst(_.get() => t, params):
-						typeParams.push(TPType(type.toComplexType()));
 						for (m in t.meta.get()) {
 							if (m.name == ":extend" || m.name == ":ext" || m.name == ":e") {
 								var extendingTypes:Array<Type> = [];
@@ -67,7 +67,6 @@ class System {
 							}
 						}
 					default:
-						Context.error('Something wrong happened', Context.currentPos());
 				}
 			}
 
