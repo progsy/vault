@@ -156,7 +156,7 @@ class VelocityComponent {
 }
 
 // We specify which components this system is going to use. You can also use @:c as a shortcut.
-@:component(TransformComponent) @:component(VelocityComponent)
+@:component(TransformComponent, 'transform') @:component(VelocityComponent, 'velocity') @:component(Int, 'somethingElse')
 class MovementSystem implements vault.behavior.System {
     public function new(capacity:Int) {
         setup(capacity);
